@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: tanstack-start-app
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 3000
