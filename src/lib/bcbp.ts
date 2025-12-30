@@ -17,6 +17,11 @@ export interface ParsedBcbp {
     toCity: string;
     carrier: string;
     flightNumber: string;
+    /**
+     * Julian day of year of the flight, as encoded in the BCBP (3‑digit day-of-year, e.g. "032").
+     * This is intentionally kept as the raw string from the barcode; callers should parse it
+     * to a number or convert it to a calendar date as needed.
+     */
     julianDate: string;
     seat: string;
     checkInSeq: string;
@@ -25,8 +30,50 @@ export interface ParsedBcbp {
   };
 }
 
+/**
+ * Parses a raw IATA Bar Coded Boarding Pass (BCBP) string into a structured representation.
+ *
+ * The parser extracts both low-level segment information (field positions and raw values)
+ * and high-level data fields (such as passenger name, PNR, routing, carrier, and flight
+ * details) from the mandatory section of the BCBP.
+ *
+ * @param raw - The full BCBP string as read from a boarding pass (e.g., from a barcode).
+ * @returns A {@link ParsedBcbp} object containing parsed segments and extracted data, or
+ * `null` if the input fails validation or cannot be parsed.
+ */
 export function parseBcbp(raw: string): ParsedBcbp | null {
-  if (!raw || raw.length < 60) return null; // Minimal validation
+  if (!raw || raw.length < 60) return null;
+
+  // Basic BCBP structural validation based on standard field layout.
+  // 0: Format Code (1) - Must be 'M' for multiple leg (standard)
+  if (raw[0] !== 'M') {
+    return null;
+  }
+
+  // Offsets derived from the BCBP mandatory section:
+  // 30-32: From City Airport Code (3)
+  // 33-35: To City Airport Code (3)
+  // 36-38: Operating Carrier Designator (3)
+  // 39-43: Flight Number (5)
+
+  const fromCityField = raw.substring(30, 33);
+  const toCityField = raw.substring(33, 36);
+  const carrierField = raw.substring(36, 39);
+  const flightNumberField = raw.substring(39, 44);
+
+  const airportCodeRegex = /^[A-Z]{3}\s*$/; // Allow trailing spaces if any (though usually 3 chars)
+  const carrierRegex = /^[A-Z0-9]{2,3}\s*$/;
+  // Flight number can have spaces
+  const flightNumberRegex = /^[0-9A-Z ]{1,5}$/;
+
+  if (
+    !airportCodeRegex.test(fromCityField.trimEnd()) ||
+    !airportCodeRegex.test(toCityField.trimEnd()) ||
+    !carrierRegex.test(carrierField.trimEnd()) ||
+    !flightNumberRegex.test(flightNumberField)
+  ) {
+    return null;
+  }
 
   const segments: BcbpSegment[] = [];
   const data: ParsedBcbp['data'] = {
@@ -43,27 +90,9 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   };
 
   // BCBP Standard Field Lengths (Mandatory Section)
-  // M: Format Code (1)
-  // 1: Number of Legs (1)
-  // PNAME: Passenger Name (20)
-  // E: Electronic Ticket Indicator (1)
-  // PNR: PNR Code (7)
-  // FROM: From City Airport Code (3)
-  // TO: To City Airport Code (3)
-  // CARRIER: Operating Carrier Designator (3)
-  // FLIGHT: Flight Number (5)
-  // DATE: Date of Flight (Julian Date) (3)
-  // COMPT: Compartment Code (1)
-  // SEAT: Seat Number (4)
-  // SEQ: Check-in Sequence Number (5)
-  // STATUS: Passenger Status (1)
-  // SIZE: Variable Size Field (2) - Hexadecimal length of the following variable size field.
-
   let cursor = 0;
 
   function addSegment(id: string, label: string, length: number, desc: string) {
-    // Some fields are variable length in practice or might be padded with spaces
-    // The standard defines fixed widths for the mandatory block
     const value = raw.substring(cursor, cursor + length);
     segments.push({
       id,
@@ -105,12 +134,7 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   addSegment('checkInSeq', 'Seq', 5, 'Check-in Sequence');
   addSegment('passengerStatus', 'Status', 1, 'Passenger Status');
 
-  // Conditional items (Size of variable field)
-  // This is a simplification. The BCBP standard is complex with variable fields.
-  // We will grab the size field next to determine if we can parse more, but for this first version,
-  // we focus on the mandatory block which covers 90% of user needs.
-
-  // Try to parse variable size field
+  // Conditional items
   if (cursor + 2 <= raw.length) {
        addSegment('varSize', 'Size', 2, 'Length of conditional data');
   }

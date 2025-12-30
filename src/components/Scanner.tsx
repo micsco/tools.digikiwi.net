@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 
 interface ScannerProps {
@@ -8,7 +8,6 @@ interface ScannerProps {
 
 export default function Scanner({ onScan, onError }: ScannerProps) {
   const scannerRef = useRef<Html5QrcodeScanner | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
 
   useEffect(() => {
     // We only want to initialize this once
@@ -37,16 +36,11 @@ export default function Scanner({ onScan, onError }: ScannerProps) {
     scanner.render(
       (decodedText) => {
         onScan(decodedText);
-        // Optionally stop scanning after success? User might want to scan multiple.
-        // For now, let's keep it running but maybe we can add a pause.
       },
       (errorMessage) => {
-        // parse error, ignore it.
         if (onError) onError(errorMessage);
       }
     );
-
-    setIsScanning(true);
 
     return () => {
       if (scannerRef.current) {

@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import Scanner from '../../components/Scanner'
 import BcbpViewer from '../../components/BcbpViewer'
 import { parseBcbp, ParsedBcbp } from '../../lib/bcbp'
@@ -13,7 +13,7 @@ function BoardingPassTool() {
   const [error, setError] = useState<string | null>(null);
   const [rawScan, setRawScan] = useState<string | null>(null);
 
-  const handleScan = (decodedText: string) => {
+  const handleScan = useCallback((decodedText: string) => {
     // Prevent infinite re-renders if same code is scanned repeatedly
     if (decodedText === rawScan) return;
 
@@ -24,10 +24,18 @@ function BoardingPassTool() {
       setParsedData(parsed);
       setError(null);
     } else {
-      setError("Could not parse boarding pass data. It might not be a standard IATA BCBP code.");
+      setError("Could not parse boarding pass data. Please ensure you're scanning a valid boarding pass barcode in the standard IATA BCBP format (typically encoded as PDF417 or Aztec) and that the barcode is clearly visible.");
       setParsedData(null);
     }
-  };
+  }, [rawScan]);
+
+  const handleError = useCallback((errorMessage: string) => {
+    // We might not want to show every scanning error as they can be frequent (e.g. "QR code not found")
+    // But if it's a critical error or the user needs feedback, we can log it or show it.
+    // For now, let's just log to console to avoid spamming the UI,
+    // unless it's a permission error which html5-qrcode usually handles in its UI.
+    console.debug("Scanner error:", errorMessage);
+  }, []);
 
   return (
     <div className="container mx-auto p-4 md:p-8 max-w-5xl">
@@ -42,7 +50,7 @@ function BoardingPassTool() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left Column: Scanner */}
         <div className="lg:col-span-1 space-y-6">
-           <Scanner onScan={handleScan} />
+           <Scanner onScan={handleScan} onError={handleError} />
 
            <div className="bg-gray-900 border border-gray-700 p-4 rounded-xl">
              <h3 className="font-semibold text-brand-accent mb-2">Barcode Types</h3>
