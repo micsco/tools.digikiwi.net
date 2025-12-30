@@ -37,7 +37,7 @@ function Dashboard() {
   )
 }
 
-function ToolCard({ to, title, description, icon }: { to: string; title: string; description: string; icon: React.ReactNode }) {
+function ToolCard({ to, title, description, icon }: { to: string; title: string; description: string; icon: JSX.Element }) {
   return (
     <Link
       to={to}
