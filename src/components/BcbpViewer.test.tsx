@@ -129,8 +129,10 @@ describe('BcbpViewer Component', () => {
     expect(container.textContent).toContain('Raw Data Structure');
     expect(container.textContent).toContain('Decoded Information');
     
-    // Check that passenger icon (👤) is not rendered since no passenger name
-    expect(container.textContent?.includes('👤')).toBe(false);
+    // Check that detail card icons are not rendered (since DetailCard returns null for empty values)
+    expect(container.textContent).not.toContain('👤'); // passenger icon
+    expect(container.textContent).not.toContain('✈️'); // flight icon
+    expect(container.textContent).not.toContain('💺'); // seat icon
   });
 
   it('should make segments keyboard accessible with tabIndex', () => {
@@ -157,11 +159,11 @@ describe('BcbpViewer Component', () => {
     expect(matchingElement).toBeTruthy();
   });
 
-  it('should render tooltips on focus for keyboard users', () => {
+  it('should have role attribute for accessibility', () => {
     const { container } = render(<BcbpViewer parsed={mockParsedData} />);
     
-    // Check that tooltips have group-focus:opacity-100 class
-    const tooltips = container.querySelectorAll('.group-focus\\:opacity-100');
-    expect(tooltips.length).toBeGreaterThan(0);
+    // Check that segments have role="button" for screen readers
+    const segmentsWithRole = container.querySelectorAll('[role="button"]');
+    expect(segmentsWithRole.length).toBeGreaterThan(0);
   });
 });

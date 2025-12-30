@@ -14,22 +14,25 @@ function BoardingPassTool() {
   const [rawScan, setRawScan] = useState<string | null>(null);
 
   const handleScan = useCallback((decodedText: string) => {
-    // Prevent infinite re-renders if same code is scanned repeatedly
-    if (decodedText === rawScan) return;
+    setRawScan((prevRawScan) => {
+      // Prevent infinite re-renders if same code is scanned repeatedly
+      if (decodedText === prevRawScan) return prevRawScan;
 
-    setRawScan(decodedText);
-    const parsed = parseBcbp(decodedText);
+      const parsed = parseBcbp(decodedText);
 
-    if (parsed) {
-      setParsedData(parsed);
-      setError(null);
-    } else {
-      setError(
-        "Could not parse boarding pass data. Please ensure you're scanning a valid boarding pass barcode in the standard IATA BCBP format (typically encoded as PDF417 or Aztec) and that the barcode is clearly visible."
-      );
-      setParsedData(null);
-    }
-  }, [rawScan]);
+      if (parsed) {
+        setParsedData(parsed);
+        setError(null);
+      } else {
+        setError(
+          "Could not read the boarding pass barcode. Please ensure the barcode is clearly visible and try scanning again."
+        );
+        setParsedData(null);
+      }
+
+      return decodedText;
+    });
+  }, []);
 
   const handleError = useCallback((errorMessage: string) => {
     // Most scanner errors are just "no barcode found" during scanning

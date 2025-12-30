@@ -24,11 +24,13 @@ export default function BcbpViewer({ parsed }: BcbpViewerProps) {
         <div className="font-mono text-lg break-all leading-loose">
           {parsed.segments.map((segment, index) => {
             const colorClass = colors[index % colors.length];
+            const segmentKey = `${segment.id}-${index}`;
             return (
               <span
-                key={`${segment.id}-${index}`}
+                key={segmentKey}
                 className={`inline-block border-b-2 px-1 mx-0.5 rounded-t ${colorClass} transition-all hover:brightness-125 cursor-help group relative`}
                 tabIndex={0}
+                role="button"
                 aria-label={`${segment.label}: ${segment.description}`}
               >
                 {segment.rawValue}

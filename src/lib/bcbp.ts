@@ -35,8 +35,9 @@ export interface ParsedBcbp {
  *
  * The parser extracts both low-level segment information (field positions and raw values)
  * and high-level data fields (such as passenger name, PNR, routing, carrier, and flight
- * details) from the mandatory section of the BCBP. Only minimal validation is performed;
- * callers should treat a `null` result as an invalid or unsupported BCBP string.
+ * details) from the mandatory section of the BCBP, and performs basic structural/format
+ * validation of these fields. Callers should treat a `null` result as an invalid or
+ * unsupported BCBP string.
  *
  * @param raw - The full BCBP string as read from a boarding pass (e.g., from a barcode).
  * @returns A {@link ParsedBcbp} object containing parsed segments and extracted data, or
@@ -47,7 +48,9 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   if (!raw || raw.length < 60) return null;
 
   // Basic BCBP structural validation based on standard field layout.
-  // The format code must be 'M' (magnetic/optical BCBP format).
+  // The format code must be 'M' (mandatory + unique items). Note: Other format codes
+  // like 'S' (mandatory only) exist per IATA Resolution 792, but we currently only
+  // support 'M' which is the most common format used by airlines.
   const formatCode = raw[0];
   if (formatCode !== 'M') {
     return null;
@@ -72,7 +75,8 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   // Validate field formats
   const airportCodeRegex = /^[A-Z]{3}$/;
   const carrierRegex = /^[A-Z0-9]{2,3}$/;
-  const flightNumberRegex = /^[0-9A-Z]{1,5}$/;
+  // Flight numbers should be numeric according to IATA standards
+  const flightNumberRegex = /^\d{1,5}$/;
 
   if (
     !airportCodeRegex.test(fromCityField) ||
@@ -100,20 +104,6 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   // BCBP Standard Field Lengths (Mandatory Section)
   let cursor = 0;
 
-  // Mapping of segment IDs to data object keys
-  const dataFieldMap: Record<string, keyof ParsedBcbp['data']> = {
-    passengerName: 'passengerName',
-    pnr: 'pnr',
-    fromCity: 'fromCity',
-    toCity: 'toCity',
-    carrier: 'carrier',
-    flightNumber: 'flightNumber',
-    julianDate: 'julianDate',
-    seat: 'seat',
-    checkInSeq: 'checkInSeq',
-    passengerStatus: 'passengerStatus',
-  };
-
   function addSegment(id: string, label: string, length: number, desc: string) {
     const value = raw.substring(cursor, cursor + length);
     segments.push({
@@ -125,10 +115,9 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
       description: desc,
     });
 
-    // Populate data object for known fields using the mapping
-    const dataKey = dataFieldMap[id];
-    if (dataKey) {
-      data[dataKey] = value.trim();
+    // Populate data object for known fields directly
+    if (id in data) {
+      data[id as keyof ParsedBcbp['data']] = value.trim();
     }
 
     cursor += length;
