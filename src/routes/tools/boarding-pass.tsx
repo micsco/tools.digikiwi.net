@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState, useCallback } from 'react'
 import Scanner from '../../components/Scanner'
 import BcbpViewer from '../../components/BcbpViewer'
-import { parseBCBP, ParsedBcbp } from '../../lib/bcbp'
+import { parseBCBP, ParsedBcbp, Segment } from '../../lib/bcbp'
 
 export const Route = createFileRoute('/tools/boarding-pass')({
   component: BoardingPassTool,
@@ -10,6 +10,7 @@ export const Route = createFileRoute('/tools/boarding-pass')({
 
 function BoardingPassTool() {
   const [parsedData, setParsedData] = useState<ParsedBcbp | null>(null);
+  const [segments, setSegments] = useState<Segment[] | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [rawScan, setRawScan] = useState<string | null>(null);
 
@@ -22,6 +23,7 @@ function BoardingPassTool() {
 
     if (result.success && result.data) {
       setParsedData(result.data);
+      setSegments(result.segments);
       setError(null);
     } else {
       // If we have partial data (data is present but success is false or just errored),
@@ -29,10 +31,12 @@ function BoardingPassTool() {
       // The user wants "fail soft", so if we have *any* data, we should probably show it with a warning.
       if (result.data) {
         setParsedData(result.data);
+        setSegments(result.segments);
         setError(`Partial decode: ${result.error || 'Unknown error'}`);
       } else {
         setError(result.error || "Could not decode boarding pass.");
         setParsedData(null);
+        setSegments(undefined);
       }
     }
   }, [rawScan]);
@@ -107,7 +111,7 @@ function BoardingPassTool() {
            )}
 
            {parsedData && (
-             <BcbpViewer parsed={parsedData} />
+             <BcbpViewer parsed={parsedData} segments={segments} />
            )}
         </div>
       </div>

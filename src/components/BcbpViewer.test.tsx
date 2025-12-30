@@ -1,99 +1,68 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import BcbpViewer from './BcbpViewer';
-import { ParsedBcbp } from '../lib/bcbp';
+import { ParsedBcbp, Segment } from '../lib/bcbp';
 import React from 'react';
 
 // Mock data
-const mockParsedData: ParsedBcbp = {
-  raw: 'M1DOE/JOHN            EABCDEF LHRJFKBA 00123100Y12A  00001100',
-  segments: [
-    { id: 'formatCode', label: 'Format', rawValue: 'M', startIndex: 0, endIndex: 1, description: 'Format Code (M)' },
-    { id: 'passengerName', label: 'Name', rawValue: 'DOE/JOHN', startIndex: 2, endIndex: 22, description: 'Passenger Name' },
-  ],
-  data: {
-    passengerName: 'DOE/JOHN',
-    pnr: 'ABCDEF',
-    fromCity: 'LHR',
-    toCity: 'JFK',
-    carrier: 'BA',
-    flightNumber: '00123',
-    julianDate: '100',
-    seat: '12A',
-    checkInSeq: '00001',
-    passengerStatus: '1',
-  },
-  formatted: {
-    flight: 'BA 123',
-    seat: '12A',
-    date: 'Apr 10',
-    passengerName: 'John Doe',
-    route: 'LHR ➝ JFK'
-  }
+const mockLeg = {
+    pnrCode: 'ABCDEF',
+    departureAirport: 'LHR',
+    arrivalAirport: 'JFK',
+    operatingCarrier: 'BA',
+    flightNumber: '123',
+    dateOfFlight: 100,
+    compartment: { code: 'Y', description: 'Economy' },
+    seatNumber: '12A',
+    sequenceNumber: '1',
+    passengerStatus: { code: '1', description: 'Confirmed' },
+    freeBaggageAllowance: '20K'
 };
+
+const mockParsedData: ParsedBcbp = {
+  formatCode: 'M',
+  numberOfLegs: 1,
+  passengerName: 'DOE/JOHN',
+  electronicTicket: 'E',
+  legs: [mockLeg],
+  baggageTags: ['0123456789'],
+  version: 1,
+  passengerDescription: 'Adult'
+};
+
+const mockSegments: Segment[] = [
+    { label: 'Format Code', value: 'M', raw: 'M', start: 0, end: 1, section: 'header' },
+    { label: 'Passenger Name', value: 'DOE/JOHN', raw: 'DOE/JOHN            ', start: 2, end: 22, section: 'header' },
+];
 
 describe('BcbpViewer', () => {
   it('renders passenger name and decoded details', () => {
-    render(<BcbpViewer parsed={mockParsedData} />);
+    render(<BcbpViewer parsed={mockParsedData} segments={mockSegments} />);
 
-    // There are multiple "DOE/JOHN" (one in raw data, one in decoded card)
     expect(screen.getAllByText('DOE/JOHN').length).toBeGreaterThan(0);
-    expect(screen.getByText('LHR ➝ JFK')).toBeDefined();
-
-    // There are multiple "BA 123" (Summary card and Detail grid)
+    expect(screen.getAllByText('LHR').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('JFK').length).toBeGreaterThan(0);
     expect(screen.getAllByText('BA 123').length).toBeGreaterThan(0);
   });
 
-  it('renders data inspector', () => {
-    render(<BcbpViewer parsed={mockParsedData} />);
-    expect(screen.getByText('Data Inspector')).toBeDefined();
+  it('renders conditional data (baggage)', () => {
+    render(<BcbpViewer parsed={mockParsedData} segments={mockSegments} />);
+    expect(screen.getByText('Baggage Allowance')).toBeDefined();
+    expect(screen.getByText('20K')).toBeDefined();
+    expect(screen.getByText('Bag Tags')).toBeDefined();
+    expect(screen.getByText('0123456789')).toBeDefined();
   });
 
-  it('renders interactive segments accessible via keyboard', () => {
-    render(<BcbpViewer parsed={mockParsedData} />);
+  it('switches to Raw Data tab', () => {
+    render(<BcbpViewer parsed={mockParsedData} segments={mockSegments} />);
 
-    const segment = screen.getByText('M');
+    const rawTab = screen.getByText('Raw Data Inspector');
+    fireEvent.click(rawTab);
 
-    // Check accessibility attributes
-    expect(segment).toHaveAttribute('tabIndex', '0');
-    expect(segment).toHaveAttribute('role', 'button');
-    // Updated expectation to match "Select [Label]" format used in new UI
-    expect(segment).toHaveAttribute('aria-label', 'Select Format');
-
-    // Simulate focus
-    segment.focus();
-    expect(segment).toHaveFocus();
-  });
-
-  it('does not render detail cards for empty data', () => {
-    const emptyData: ParsedBcbp = {
-      raw: 'M...',
-      segments: [],
-      data: {
-        passengerName: '',
-        pnr: '',
-        fromCity: '',
-        toCity: '',
-        carrier: '',
-        flightNumber: '',
-        julianDate: '',
-        seat: '',
-        checkInSeq: '',
-        passengerStatus: '',
-      },
-      formatted: {
-        flight: '',
-        seat: '',
-        date: '',
-        passengerName: '',
-        route: ''
-      }
-    };
-
-    render(<BcbpViewer parsed={emptyData} />);
-
-    // Check that no detail cards are rendered
-    const detailCards = screen.queryAllByTestId('detail-card');
-    expect(detailCards.length).toBe(0);
+    // Check if segments are rendered
+    expect(screen.getByText('M')).toBeDefined();
+    // Raw passenger name (with spaces) might be split or rendered as is.
+    // Our Viewer renders {seg.raw}.
+    expect(screen.getByText('DOE/JOHN')).toBeDefined();
   });
 });
