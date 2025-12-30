@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 
 interface ScannerProps {
@@ -8,7 +8,6 @@ interface ScannerProps {
 
 export default function Scanner({ onScan, onError }: ScannerProps) {
   const scannerRef = useRef<Html5QrcodeScanner | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
 
   useEffect(() => {
     // We only want to initialize this once
@@ -46,8 +45,6 @@ export default function Scanner({ onScan, onError }: ScannerProps) {
       }
     );
 
-    setIsScanning(true);
-
     return () => {
       if (scannerRef.current) {
         scannerRef.current.clear().catch(error => {
@@ -56,7 +53,8 @@ export default function Scanner({ onScan, onError }: ScannerProps) {
         scannerRef.current = null;
       }
     };
-  }, [onScan, onError]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="w-full max-w-md mx-auto bg-gray-900 p-4 rounded-xl border border-gray-700">

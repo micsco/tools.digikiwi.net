@@ -28,10 +28,12 @@ export default function BcbpViewer({ parsed }: BcbpViewerProps) {
               <span
                 key={`${segment.id}-${index}`}
                 className={`inline-block border-b-2 px-1 mx-0.5 rounded-t ${colorClass} transition-all hover:brightness-125 cursor-help group relative`}
+                tabIndex={0}
+                aria-label={`${segment.label}: ${segment.description}`}
               >
                 {segment.rawValue}
                 {/* Tooltip */}
-                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black text-white text-xs rounded opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none z-10 border border-gray-600">
+                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black text-white text-xs rounded opacity-0 group-hover:opacity-100 group-focus:opacity-100 whitespace-nowrap pointer-events-none z-10 border border-gray-600">
                   {segment.label}: {segment.description}
                 </span>
               </span>

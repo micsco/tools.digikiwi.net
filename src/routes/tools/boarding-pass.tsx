@@ -13,6 +13,12 @@ function BoardingPassTool() {
   const [error, setError] = useState<string | null>(null);
   const [rawScan, setRawScan] = useState<string | null>(null);
 
+  const handleScanError = (errorMessage: string) => {
+    // Most scanner errors are just "no barcode found" during scanning
+    // We don't need to display these to users as they're expected
+    console.debug('Scanner error:', errorMessage);
+  };
+
   const handleScan = (decodedText: string) => {
     // Prevent infinite re-renders if same code is scanned repeatedly
     if (decodedText === rawScan) return;
@@ -24,7 +30,9 @@ function BoardingPassTool() {
       setParsedData(parsed);
       setError(null);
     } else {
-      setError("Could not parse boarding pass data. It might not be a standard IATA BCBP code.");
+      setError(
+        "Could not parse boarding pass data. Please ensure you're scanning a valid boarding pass barcode in the standard IATA BCBP format (typically encoded as PDF417 or Aztec) and that the barcode is clearly visible."
+      );
       setParsedData(null);
     }
   };
@@ -42,7 +50,7 @@ function BoardingPassTool() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left Column: Scanner */}
         <div className="lg:col-span-1 space-y-6">
-           <Scanner onScan={handleScan} />
+           <Scanner onScan={handleScan} onError={handleScanError} />
 
            <div className="bg-gray-900 border border-gray-700 p-4 rounded-xl">
              <h3 className="font-semibold text-brand-accent mb-2">Barcode Types</h3>
