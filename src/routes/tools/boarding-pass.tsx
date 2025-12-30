@@ -37,14 +37,31 @@ function BoardingPassTool() {
     console.debug("Scanner error:", errorMessage);
   }, []);
 
+  const loadSample = () => {
+    // Sample with full Mandatory block + Size + Conditional
+    // M1DOE/JOHN            EABCDEF LHRJFKBA 00123100Y012A000011 (58 chars)
+    // + Size (08) + XXXX1005 (8 chars)
+    // This allows verification of Date of Issue extraction (1005 -> Day 100, Year 2025)
+    const sample = 'M1DOE/JOHN            EABCDEF LHRJFKBA 00123100Y012A00001108XXXX1005';
+    handleScan(sample);
+  };
+
   return (
     <div className="container mx-auto p-4 md:p-8 max-w-5xl">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2">Boarding Pass Scanner</h1>
-        <p className="text-gray-400">
-          Scan a boarding pass barcode (PDF417 or Aztec) to decode its contents instantly.
-          Everything happens offline in your browser.
-        </p>
+      <div className="mb-8 flex flex-col md:flex-row justify-between items-start md:items-center">
+        <div>
+           <h1 className="text-3xl font-bold text-white mb-2">Boarding Pass Scanner</h1>
+           <p className="text-gray-400">
+             Scan a boarding pass barcode (PDF417 or Aztec) to decode its contents instantly.
+           </p>
+        </div>
+        <button
+          data-testid="load-sample-btn"
+          onClick={loadSample}
+          className="mt-4 md:mt-0 text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded border border-gray-600 transition-colors"
+        >
+          Load Sample
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -80,8 +97,10 @@ function BoardingPassTool() {
            )}
 
            {!parsedData && !error && (
-             <div className="h-full flex flex-col items-center justify-center p-12 border-2 border-dashed border-gray-700 rounded-xl text-gray-500">
-               <p className="text-lg">Waiting for scan...</p>
+             <div className="h-full flex flex-col items-center justify-center p-12 border-2 border-dashed border-gray-700 rounded-xl text-gray-500 text-center">
+               <p className="text-4xl mb-4">📷</p>
+               <p className="text-lg mb-2">Waiting for scan...</p>
+               <p className="text-sm text-gray-600">Point your camera at a boarding pass or use the "Load Sample" button.</p>
              </div>
            )}
 
