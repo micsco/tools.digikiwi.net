@@ -33,11 +33,48 @@ describe('BCBP Parser', () => {
     // Seat: 012A (4)
     // Seq: 00001 (5)
     // Status: 1 (1)
-    // Size: 00 (2) -> No variable block
 
-    // Total: 1+1+20+1+7+3+3+3+5+3+1+4+5+1+2 = 60.
+    // Total: 1+1+20+1+7+3+3+3+5+3+1+4+5+1 = 58 chars for Mandatory Block WITHOUT size.
+    // Wait, the BCBP_SCHEMA defines offsets. Let's re-verify the offsets in `bcbp.ts`.
 
-    const raw = 'M1DOE/JOHN            EABCDEF LHRJFKBA 00123100Y012A 00001100';
+    // BCBP_SCHEMA items:
+    // Format(1), Legs(1), Name(20), E(1), PNR(7), From(3), To(3), Carrier(3), Flight(5), Date(3), Class(1), Seat(4), Seq(5), Status(1).
+    // Sum = 1+1+20+1+7+3+3+3+5+3+1+4+5+1 = 58 characters.
+    // THEN comes the "Size" field (variable size field length) (2 chars).
+    // Total min length expected by parser check = 60.
+
+    // String Construction:
+    // M (1)
+    // 1 (1)
+    // DOE/JOHN            (20)
+    // E (1)
+    // ABCDEF  (7) - Padded PNR
+    // LHR (3)
+    // JFK (3)
+    // BA  (3) - Padded Carrier
+    // 00123 (5)
+    // 100 (3)
+    // Y (1)
+    // 012A (4)
+    // 00001 (5)
+    // 1 (1)
+    // 00 (2) - Size field
+
+    // M1DOE/JOHN            EABCDEF LHRJFKBA 00123100Y012A00001100
+    // Index check:
+    // M: 0
+    // 1: 1
+    // Name: 2-22
+    // E: 22
+    // PNR: 23-30
+    // From: 30-33
+    // To: 33-36
+    // Carrier: 36-39
+    // Flight: 39-44
+    // Date: 44-47
+    // Class: 47 -> Y.
+
+    const raw = 'M1DOE/JOHN            EABCDEF LHRJFKBA 00123100Y012A00001100';
     const result = parseBcbp(raw);
 
     expect(result).not.toBeNull();
@@ -57,22 +94,33 @@ describe('BCBP Parser', () => {
 
     expect(result.formatted.date).toContain('Apr'); // Day 100 is in April (non-leap)
 
+    // Check Class Formatting (Y -> Economy)
+    expect(result.formatted.classOfService).toContain('Economy Class');
+
     expect(result.segments.length).toBeGreaterThan(0);
     expect(result.segments[0].id).toBe('formatCode');
   });
 
   it('should parse conditional block with date of issue', () => {
-    // Construct a string with valid hex length for conditional block
     // Mandatory (58 chars) + Size (2 chars) + Conditional Data
 
-    // Mandatory part
-    const m = 'M1DOE/JANE            EABCDEF LHRJFKBA 00123100Y012A 000011';
-    // Size: 0A (10 chars in hex)
+    // M1DOE/JANE            EABCDEF LHRJFKBA 00123100Y012A 000011
+    // Length: 1+1+20+1+7+3+3+3+5+3+1+4+5+1 = 58
+
+    const m = 'M1DOE/JANE            EABCDEF LHRJFKBA 00123100Y012A000011';
+
+    // Size: 0A (10 chars in hex) -> "0A"
     const size = '0A';
-    // Conditional: 1111202511 (Length 10).
-    // Index 4-7 is 2025 (Year 2025? No wait, format is Julian(3)+Year(1) -> 4 chars)
-    // Let's try 1005 (Day 100, Year 5 -> 2025)
-    // > 1 (Ver) 1 (Pax) 1 (Src) 1 (Src) 1005 (Date) 1 (Doc)
+
+    // Conditional: 1111100511 (Length 10)
+    // Indexes relative to Conditional Block Start:
+    // 0: 1
+    // 1: 1
+    // 2: 1
+    // 3: 1
+    // 4-8: 1005 (Julian 100, Year 5) -> Date of Issue
+    // 8: 1
+    // 9: 1
     const cond = '1111100511';
 
     const raw = m + size + cond;

@@ -39,12 +39,14 @@ describe('BcbpViewer', () => {
     // There are multiple "DOE/JOHN" (one in raw data, one in decoded card)
     expect(screen.getAllByText('DOE/JOHN').length).toBeGreaterThan(0);
     expect(screen.getByText('LHR ➝ JFK')).toBeDefined();
-    expect(screen.getByText('BA00123')).toBeDefined();
+
+    // There are multiple "BA 123" (Summary card and Detail grid)
+    expect(screen.getAllByText('BA 123').length).toBeGreaterThan(0);
   });
 
-  it('renders raw data structure', () => {
+  it('renders data inspector', () => {
     render(<BcbpViewer parsed={mockParsedData} />);
-    expect(screen.getByText('Raw Data Structure')).toBeDefined();
+    expect(screen.getByText('Data Inspector')).toBeDefined();
   });
 
   it('renders interactive segments accessible via keyboard', () => {

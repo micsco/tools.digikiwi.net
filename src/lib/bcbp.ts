@@ -18,6 +18,7 @@ export interface ParsedBcbp {
     carrier: string;
     flightNumber: string;
     julianDate: string;
+    compartment: string;
     seat: string;
     checkInSeq: string;
     passengerStatus: string;
@@ -30,6 +31,7 @@ export interface ParsedBcbp {
     date: string;
     passengerName: string;
     route: string;
+    classOfService: string;
   };
 }
 
@@ -48,34 +50,34 @@ const BCBP_SCHEMA: BcbpFieldDefinition[] = [
     id: 'formatCode',
     label: 'Format',
     length: 1,
-    description: 'Format Code (M)',
+    description: 'Format Code (M = Mandatory)',
     // Only 'M' (Mandatory + Unique items) is currently supported.
     // 'S' (Mandatory only) is another valid IATA format code but not implemented here.
     validate: (v) => v === 'M'
   },
-  { id: 'legs', label: 'Legs', length: 1, description: 'Number of Legs' },
-  { id: 'passengerName', label: 'Name', length: 20, description: 'Passenger Name' },
-  { id: 'eticket', label: 'E-Ticket', length: 1, description: 'Electronic Ticket Indicator' },
-  { id: 'pnr', label: 'PNR', length: 7, description: 'Booking Reference (PNR)' },
+  { id: 'legs', label: 'Legs', length: 1, description: 'Number of Legs Encoded' },
+  { id: 'passengerName', label: 'Name', length: 20, description: 'Passenger Name (Last/First)' },
+  { id: 'eticket', label: 'E-Ticket', length: 1, description: 'Electronic Ticket Indicator (E)' },
+  { id: 'pnr', label: 'PNR', length: 7, description: 'Booking Reference / PNR' },
   {
     id: 'fromCity',
     label: 'From',
     length: 3,
-    description: 'Origin Airport',
+    description: 'Origin Airport IATA Code',
     validate: (v) => /^[A-Z]{3}\s*$/.test(v)
   },
   {
     id: 'toCity',
     label: 'To',
     length: 3,
-    description: 'Destination Airport',
+    description: 'Destination Airport IATA Code',
     validate: (v) => /^[A-Z]{3}\s*$/.test(v)
   },
   {
     id: 'carrier',
     label: 'Carrier',
     length: 3,
-    description: 'Operating Carrier',
+    description: 'Operating Carrier Designator',
     validate: (v) => /^[A-Z0-9]{2,3}\s*$/.test(v)
   },
   {
@@ -86,23 +88,18 @@ const BCBP_SCHEMA: BcbpFieldDefinition[] = [
     // IATA standard requires numeric flight numbers (1-4 digits, often 0-padded to 4 or 5 chars in BCBP).
     validate: (v) => /^\d{1,5}\s*$/.test(v)
   },
-  { id: 'julianDate', label: 'Date', length: 3, description: 'Date of Flight (Julian)' },
-  { id: 'compartment', label: 'Class', length: 1, description: 'Compartment Code' },
+  { id: 'julianDate', label: 'Date', length: 3, description: 'Date of Flight (Julian Day 001-366)' },
+  { id: 'compartment', label: 'Class', length: 1, description: 'Compartment Code (Class of Service)' },
   { id: 'seat', label: 'Seat', length: 4, description: 'Seat Number' },
-  { id: 'checkInSeq', label: 'Seq', length: 5, description: 'Check-in Sequence' },
+  { id: 'checkInSeq', label: 'Seq', length: 5, description: 'Check-in Sequence Number' },
   { id: 'passengerStatus', label: 'Status', length: 1, description: 'Passenger Status' },
 ];
 
 // Helper to format Julian Date (DDD) to readable date (e.g. "Feb 01")
-// Assumes current year if not provided, which might be off for year-boundary flights.
 function formatJulianDate(julian: string, year?: number): string {
   const dayOfYear = parseInt(julian, 10);
   if (isNaN(dayOfYear)) return julian;
 
-  // If year is not provided, try to guess or just show generic "Day X"
-  // But users expect a date. Let's pick current year, but if the resulting date is > 11 months away, maybe it was last year?
-  // Safe bet: Just format as "Day D of Year" if unsure, or default to current year.
-  // Ideally, if we have dateOfIssue, we use that year.
   const targetYear = year || new Date().getFullYear();
 
   const date = new Date(targetYear, 0); // Jan 1st
@@ -123,8 +120,6 @@ function formatFlight(carrier: string, number: string): string {
 
 function formatName(name: string): string {
   // DOE/JOHN -> John Doe
-  // OR keep LAST/FIRST format but cleaner?
-  // User asked for "human friendly". "John Doe" is friendlier than "DOE/JOHN".
   if (name.includes('/')) {
     const [last, first] = name.split('/');
     // Title case helper
@@ -132,6 +127,44 @@ function formatName(name: string): string {
     return `${toTitleCase(first)} ${toTitleCase(last)}`;
   }
   return name;
+}
+
+function formatClass(code: string): string {
+  // Common IATA codes mapping
+  // F: First, J: Business, W: Premium Economy, Y: Economy
+  // C, D, I, Z -> Business
+  // A, P -> First
+  // B, H, K, M, L, V, S, N, Q, O... -> Economy
+
+  const c = code.trim().toUpperCase();
+  switch (c) {
+    case 'F':
+    case 'A':
+    case 'P':
+      return `First Class (${c})`;
+    case 'J':
+    case 'C':
+    case 'D':
+    case 'I':
+    case 'Z':
+      return `Business Class (${c})`;
+    case 'W':
+      return `Premium Economy (${c})`;
+    case 'Y':
+    case 'B':
+    case 'H':
+    case 'K':
+    case 'M':
+    case 'L':
+    case 'V':
+    case 'S':
+    case 'N':
+    case 'Q':
+    case 'O':
+      return `Economy Class (${c})`;
+    default:
+      return c.length > 0 ? `Class ${c}` : '';
+  }
 }
 
 /**
@@ -149,6 +182,7 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
     carrier: '',
     flightNumber: '',
     julianDate: '',
+    compartment: '',
     seat: '',
     checkInSeq: '',
     passengerStatus: '',
@@ -183,7 +217,6 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   }
 
   // 2. Conditional Block Parsing
-  // Check for the field size of the variable size field (2 chars hex)
   let dateOfIssueYear: number | undefined;
 
   if (cursor + 2 <= raw.length) {
@@ -201,23 +234,7 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
 
        cursor += 2;
 
-       // If valid size, try to parse known conditional fields
-       // Note: Structure varies, but often:
-       // > [0] Version (1)
-       // > [1] Passenger Desc (1)
-       // > [2] Source Checkin (1)
-       // > [3] Source BP Issue (1)
-       // > [4-7] Date Issue (4) (Julian + 1 digit year)
-       // This is assuming "Unique Conditional Data" follows standard sequence.
-
        if (!isNaN(varSize) && varSize > 0 && cursor + varSize <= raw.length) {
-         // Create a segment for the whole block for now, or split if we can identify version
-         // Let's try to detect Date of Issue (Field 22)
-         // Usually at offset 4 inside the unique block if version > 1?
-         // This is heuristically complex without full implementation.
-         // Let's just create a "Conditional Data" segment for the bulk
-         // But TRY to peek at index 4-7 for Date of Issue if length allows.
-
          const condData = raw.substring(cursor, cursor + varSize);
 
          // Heuristic: If we have at least 8 chars, we might find Date of Issue at index 4 (length 4)
@@ -229,16 +246,9 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
             const yDigit = parseInt(dateIssueVal[3], 10);
 
             // Guess full year from 1 digit.
-            // Current year
             const currentYear = new Date().getFullYear();
             const currentDecade = Math.floor(currentYear / 10) * 10;
             dateOfIssueYear = currentDecade + yDigit;
-
-            // Adjust decade if needed (e.g. current 2024, digit 9 -> 2019? unlikely for BP, usually 2029 or 2019?)
-            // Usually BP is for close future/past.
-            // If we are 2020 and digit is 9 -> 2019.
-            // If we are 2020 and digit is 1 -> 2021.
-            // Simple logic: Closest to current year.
          }
 
          segments.push({
@@ -273,6 +283,7 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
     date: formatJulianDate(data.julianDate || '', dateOfIssueYear),
     passengerName: formatName(data.passengerName || ''),
     route: `${data.fromCity} ➝ ${data.toCity}`,
+    classOfService: formatClass(data.compartment || ''),
   };
 
   return {
