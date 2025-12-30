@@ -82,7 +82,7 @@ describe('BCBP Parser', () => {
   });
 
   it('fails soft on invalid data', () => {
-    const BAD_STRING = "M1       INVALID_FORMAT       ";
+    const BAD_STRING = "M1";
     const result = parseBCBP(BAD_STRING);
     expect(result.success).toBe(false);
     expect(result.error).toContain('Input too short');

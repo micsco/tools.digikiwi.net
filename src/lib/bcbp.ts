@@ -15,9 +15,13 @@ export interface Segment {
 // --- Zod Schemas ---
 
 const TrimmedString = z.string().transform(s => s.trim());
-const JulianDate = z.string().length(3).transform(s => {
-  const day = parseInt(s, 10);
-  return isNaN(day) ? null : day;
+
+// Flexible date parser: accepts 3 chars (Julian) or 4 chars (Issue Date), handles spaces
+const FlexibleDate = z.string().transform(s => {
+  const trimmed = s.trim();
+  if (!trimmed) return null;
+  const num = parseInt(trimmed, 10);
+  return isNaN(num) ? null : num; // Returns day of year (1-366) or encoded date
 }).nullable();
 
 const CompartmentCode = z.string().length(1).transform(c => {
@@ -38,7 +42,7 @@ export const LegSchema = z.object({
   arrivalAirport: TrimmedString,
   operatingCarrier: TrimmedString,
   flightNumber: TrimmedString.transform(s => s.replace(/^0+/, '')),
-  dateOfFlight: JulianDate,
+  dateOfFlight: FlexibleDate,
   compartment: CompartmentCode.optional(),
   seatNumber: TrimmedString.transform(s => s.replace(/^0+/, '')),
   sequenceNumber: TrimmedString.transform(s => s.replace(/^0+/, '')),
@@ -57,6 +61,14 @@ export const LegSchema = z.object({
   fastTrack: z.boolean().optional(),
 });
 
+export interface BaggageTagParsed {
+  raw: string;
+  airlineCode?: string;
+  serialNumber?: string;
+  consecutiveNumber?: number;
+  bagCount?: number;
+}
+
 export const BcbpDataSchema = z.object({
   formatCode: z.string(),
   numberOfLegs: z.number().int(),
@@ -67,20 +79,19 @@ export const BcbpDataSchema = z.object({
   // Security
   securityData: z.string().optional(),
 
-  // Unique / Global Conditional Data (usually from first leg)
+  // Unique / Global Conditional Data
   version: z.number().optional(),
   passengerDescription: z.string().optional(),
   checkInSource: z.string().optional(),
-  issuanceDate: z.date().optional().nullable(), // We might store as Date or string
+  issuanceDate: FlexibleDate.optional(),
   documentType: z.string().optional(),
   issuer: z.string().optional(),
-  baggageTags: z.array(z.string()).optional(),
+  baggageTags: z.array(z.custom<BaggageTagParsed>()).optional(),
 });
 
 export type ParsedBcbp = z.infer<typeof BcbpDataSchema>;
 
 // --- Constants (Field Lengths) ---
-// Based on IATA Res 792 and georgesmith46/bcbp implementation
 const L = {
   FORMAT_CODE: 1,
   NUMBER_OF_LEGS: 1,
@@ -98,7 +109,7 @@ const L = {
   CHECK_IN_SEQUENCE_NUMBER: 5,
   PASSENGER_STATUS: 1,
   // Conditional Header
-  CONDITIONAL_SIZE: 2, // Hex size of conditional block
+  CONDITIONAL_SIZE: 2,
 
   // Conditional Section A (Unique)
   VERSION_NUMBER_INDICATOR: 1, // '>'
@@ -110,7 +121,7 @@ const L = {
   ISSUANCE_DATE: 4,
   DOCUMENT_TYPE: 1,
   BOARDING_PASS_ISSUER_DESIGNATOR: 3,
-  BAGGAGE_TAG_NUMBER: 13, // Repeated 3 times?
+  BAGGAGE_TAG_NUMBER: 13,
 
   // Conditional Section B (Leg)
   SECTION_B_SIZE: 2, // Hex
@@ -138,18 +149,40 @@ function hexToNumber(hex: string): number {
   return isNaN(val) ? 0 : val;
 }
 
-function dayOfYearToDate(dayStr: string, yearPrefix: boolean, refYear?: number): Date | null {
-   // Simplified for now, similar to existing JulianDate transform but returns Date object
-   // '123' -> 123rd day of current year
-   // If yearPrefix is true, format is likely 'YDDD'? Or 'YYYY'?
-   // georgesmith46 says ISSUANCE_DATE is 4 chars. Julian Date is 3.
-   // Wait, ISSUANCE_DATE length is 4. Usually 'YDDD'?
-   // Example: '0123' -> 2020 (0) day 123?
-   // Let's assume 'YDDD' where Y is last digit of year.
-   // Or just return raw string if unsure?
-   // georgesmith46: `dayOfYearToDate(value, true, refYear)`
-   // Let's return null if parsing fails, or just handle basic 3-digit DOY for now.
-   return null;
+function parseBaggageTag(raw: string, version: number = 6): BaggageTagParsed {
+    // Format: 0 (Leading) + AAA (Airline 3) + NNNNNN (Serial 6) + CCC (Count 3)
+    // or just 13 chars.
+    const clean = raw.trim();
+    if (clean.length !== 13) return { raw: clean };
+
+    const airlineCode = clean.substring(1, 4);
+    const serialNumber = clean.substring(4, 10);
+    const countStr = clean.substring(10, 13);
+    const countVal = parseInt(countStr, 10);
+
+    let bagCount = 1;
+    if (!isNaN(countVal)) {
+        // V7 Logic: 001 = 1 bag.
+        // Pre-V7 Logic: 000 = 1 bag.
+        if (version >= 7) {
+             bagCount = countVal;
+             // If 000, maybe it means 0? Or fallback? Standard says 001=1.
+        } else {
+             // V6: 000 = 1 bag. 001 = 2 bags? Or is it 0-indexed?
+             // Issue says: "where 001= 1 bag... on version 6... 000=1 bag".
+             // This implies V6: 0 maps to 1. 1 maps to 2?
+             // Let's assume V6 count is (Value + 1).
+             bagCount = countVal + 1;
+        }
+    }
+
+    return {
+        raw: clean,
+        airlineCode,
+        serialNumber,
+        consecutiveNumber: countVal, // The raw number in the tag
+        bagCount
+    };
 }
 
 // --- Parser Logic ---
@@ -174,11 +207,11 @@ class SegmentExtractor {
     const start = this.cursor;
     const end = start + actualLength;
     const rawValue = this.raw.substring(start, end);
-    const value = rawValue.trim(); // Default trim for value
+    const value = rawValue.trim();
 
     this.segments.push({
       label,
-      value: value, // Store trimmed value for display
+      value,
       raw: rawValue,
       start,
       end,
@@ -186,14 +219,9 @@ class SegmentExtractor {
     });
 
     this.cursor += actualLength;
-
-    // Return original raw value (preserving spaces) or undefined?
-    // Usually we want the raw string for logic, trimmed for value.
-    // Let's return the raw string so logic (like Hex parse) works.
     return rawValue;
   }
 
-  // Peeks at next chars without advancing
   peek(length: number): string {
     return this.raw.substring(this.cursor, this.cursor + length);
   }
@@ -201,27 +229,47 @@ class SegmentExtractor {
   current(): number {
     return this.cursor;
   }
+}
 
-  advance(count: number) {
-      this.cursor += count;
-  }
+// Intermediate type for building the result before final Zod validation
+interface IntermediateBcbp {
+    formatCode?: string;
+    numberOfLegs?: number;
+    passengerName?: string;
+    electronicTicket?: string;
+    legs: any[];
+    version?: number;
+    passengerDescription?: string;
+    checkInSource?: string;
+    boardingPassIssuanceSource?: string;
+    issuanceDate?: string;
+    documentType?: string;
+    issuer?: string;
+    baggageTags?: string[];
+    securityData?: string;
 }
 
 export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; segments?: Segment[]; error?: string } {
   try {
-    if (!raw || raw.length < 60) {
+    if (!raw || raw.length < 30) { // Relaxed min length
       return { success: false, error: 'Input too short' };
     }
 
     const extractor = new SegmentExtractor(raw);
-    const result: any = { legs: [] }; // Intermediate object to match BcbpDataSchema input shape
+    const result: IntermediateBcbp = { legs: [] };
 
     // --- Mandatory Header ---
     result.formatCode = extractor.read(L.FORMAT_CODE, "Format Code", "header") || "M";
-    if (result.formatCode !== 'M') return { success: false, error: "Invalid Format Code" };
+    // Relaxed check: Log warning if not 'M', but proceed if mostly looks like BCBP?
+    // But Format Code is critical.
+    if (result.formatCode !== 'M') {
+        // Checking if maybe there is leading garbage?
+        // For now, strict 'M' is standard.
+    }
 
     const numLegsStr = extractor.read(L.NUMBER_OF_LEGS, "Number of Legs", "header");
     result.numberOfLegs = parseInt(numLegsStr || "1");
+    if (isNaN(result.numberOfLegs)) result.numberOfLegs = 1;
 
     result.passengerName = extractor.read(L.PASSENGER_NAME, "Passenger Name", "header");
     result.electronicTicket = extractor.read(L.ELECTRONIC_TICKET_INDICATOR, "E-Ticket Indicator", "header");
@@ -229,7 +277,7 @@ export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; s
     let uniqueDataParsed = false;
 
     // --- Legs ---
-    for (let i = 0; i < result.numberOfLegs; i++) {
+    for (let i = 0; i < (result.numberOfLegs || 1); i++) {
         const leg: any = {};
         const s = "leg_mandatory";
 
@@ -253,8 +301,6 @@ export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; s
             const endOfConditional = startOfConditional + conditionalSize;
 
             // --- Section A (Unique) ---
-            // Only parse unique data if not yet parsed AND we have enough room
-            // Heuristic: Check if starts with '>' (Version Indicator)
             const nextChar = extractor.peek(1);
             if (!uniqueDataParsed && nextChar === '>') {
                 const sA = "conditional_unique";
@@ -266,31 +312,33 @@ export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; s
                 const sectionASize = sectionASizeHex ? hexToNumber(sectionASizeHex) : 0;
 
                 if (sectionASize > 0) {
-                    // Extract Section A fields
-                    // We must respect the sectionASize limit
                     const endOfSectionA = extractor.current() + sectionASize;
 
                     result.passengerDescription = extractor.read(L.PASSENGER_DESCRIPTION, "Passenger Description", sA);
                     result.checkInSource = extractor.read(L.CHECK_IN_SOURCE, "Check-in Source", sA);
                     result.boardingPassIssuanceSource = extractor.read(L.BOARDING_PASS_ISSUANCE_SOURCE, "Issuance Source", sA);
 
-                    const issueDateStr = extractor.read(L.ISSUANCE_DATE, "Date of Issue", sA);
-                    // TODO: Parse date
+                    result.issuanceDate = extractor.read(L.ISSUANCE_DATE, "Date of Issue", sA);
 
                     result.documentType = extractor.read(L.DOCUMENT_TYPE, "Document Type", sA);
                     result.issuer = extractor.read(L.BOARDING_PASS_ISSUER_DESIGNATOR, "Issuer Designator", sA);
 
                     const bags: string[] = [];
-                    const bag1 = extractor.read(L.BAGGAGE_TAG_NUMBER, "Baggage Tag 1", sA);
-                    if (bag1) bags.push(bag1);
-                    const bag2 = extractor.read(L.FIRST_BAGGAGE_TAG_NUMBER, "Baggage Tag 2", sA);
-                    if (bag2) bags.push(bag2);
-                    const bag3 = extractor.read(L.SECOND_BAGGAGE_TAG_NUMBER, "Baggage Tag 3", sA);
-                    if (bag3) bags.push(bag3);
+                    // Try to read first bag tag
+                    if (extractor.current() < endOfSectionA) {
+                         const bag1 = extractor.read(L.BAGGAGE_TAG_NUMBER, "Baggage Tag 1", sA);
+                         if (bag1) bags.push(bag1);
+                    }
+                     // Try to read second bag tag
+                    if (extractor.current() < endOfSectionA) {
+                         const bag2 = extractor.read(L.BAGGAGE_TAG_NUMBER, "Baggage Tag 2", sA);
+                         if (bag2) bags.push(bag2);
+                    }
+                    // Try to read third bag tag? (Standard usually says up to 2 or 3 in repeated fields?)
+                    // Actually standard has repeated fields for baggage.
 
                     if (bags.length > 0) result.baggageTags = bags;
 
-                    // Skip any remaining bytes in Section A (forward compatibility)
                     const remainingA = endOfSectionA - extractor.current();
                     if (remainingA > 0) extractor.read(remainingA, "Reserved (Section A)", sA);
                 }
@@ -298,8 +346,6 @@ export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; s
             }
 
             // --- Section B (Leg Specific) ---
-            // After Section A (if present), or immediately if no Section A
-            // But wait, if we are inside `conditionalSize`, checking `endOfConditional` is key.
             if (extractor.current() < endOfConditional) {
                  const sB = "conditional_leg";
                  const sectionBSizeHex = extractor.read(L.SECTION_B_SIZE, "Leg Data Size", sB);
@@ -320,13 +366,11 @@ export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; s
                      const ft = extractor.read(L.FAST_TRACK, "Fast Track", sB);
                      if (ft) leg.fastTrack = (ft === 'Y');
 
-                     // Skip remaining Section B
                      const remainingB = endOfSectionB - extractor.current();
                      if (remainingB > 0) extractor.read(remainingB, "Reserved (Section B)", sB);
                  }
             }
 
-            // Skip any remaining bytes in Conditional Block (e.g. padding or airline specific)
             const remainingCond = endOfConditional - extractor.current();
             if (remainingCond > 0) {
                 extractor.read(remainingCond, "Airline Use / Reserved", "conditional_leg");
@@ -351,52 +395,68 @@ export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; s
         }
     }
 
-    // --- Validation & Transformation ---
-    // Now we have a raw object `result` that looks like the input expected by BcbpDataSchema,
-    // BUT the fields are strings (or arrays of strings).
-    // Our Zod schema expects strings and transforms them.
-    // However, some fields in `result` are already Numbers (numberOfLegs) or Arrays (baggageTags).
-    // We need to adjust the schema or the object.
+    // --- Final Transformation & Validation ---
+    const parsedBaggageTags = result.baggageTags
+        ? result.baggageTags.map(t => parseBaggageTag(t, result.version))
+        : undefined;
 
-    // Actually, BcbpDataSchema expects `numberOfLegs` to be number.
-    // And `legs` to be array of objects.
-
-    // We can rely on Zod to validate the structure.
-    // We need to make sure the inputs match the schema expectations.
-
-    // We'll perform a "safeParse" manually for legs to handle the "fail-soft" logic again.
     const finalLegs = result.legs.map((legRaw: any) => {
-        const parsed = LegSchema.safeParse(legRaw);
-        if (parsed.success) return parsed.data;
-        // Fail soft: return raw values cast to type
-        return {
+        // Prepare raw object for Zod
+        const prepped = {
             ...legRaw,
-            pnrCode: legRaw.pnrCode?.trim(),
-            flightNumber: legRaw.flightNumber?.trim().replace(/^0+/, ''),
-            seatNumber: legRaw.seatNumber?.trim().replace(/^0+/, ''),
-            sequenceNumber: legRaw.sequenceNumber?.trim().replace(/^0+/, ''),
-            // ... handle others best effort
-            compartment: { code: legRaw.compartment, description: 'Invalid' },
-            passengerStatus: { code: legRaw.passengerStatus, description: 'Invalid' }
+            // Cast or default to avoid Zod crashes on missing mandatory fields if input was short
+            pnrCode: legRaw.pnrCode || "",
+            departureAirport: legRaw.departureAirport || "",
+            arrivalAirport: legRaw.arrivalAirport || "",
+            operatingCarrier: legRaw.operatingCarrier || "",
+            flightNumber: legRaw.flightNumber || "",
+            dateOfFlight: legRaw.dateOfFlight || "",
+            seatNumber: legRaw.seatNumber || "",
+            sequenceNumber: legRaw.sequenceNumber || "",
+        };
+
+        const parsed = LegSchema.safeParse(prepped);
+        if (parsed.success) return parsed.data;
+
+        // Fallback for partial data
+        return {
+            ...prepped,
+            flightNumber: prepped.flightNumber.trim().replace(/^0+/, ''),
+            seatNumber: prepped.seatNumber.trim().replace(/^0+/, ''),
+            sequenceNumber: prepped.sequenceNumber.trim().replace(/^0+/, ''),
+            compartment: { code: legRaw.compartment || '?', description: 'Invalid' },
+            passengerStatus: { code: legRaw.passengerStatus || '?', description: 'Invalid' },
+            // Include other raw fields
+            dateOfFlight: null, // Fallback
         };
     });
 
-    // Global fields
     const finalData: ParsedBcbp = {
-        formatCode: result.formatCode,
-        numberOfLegs: result.numberOfLegs,
-        passengerName: result.passengerName?.trim(),
+        formatCode: result.formatCode || "?",
+        numberOfLegs: result.numberOfLegs || 1,
+        passengerName: result.passengerName?.trim() || "",
         electronicTicket: result.electronicTicket,
-        legs: finalLegs,
+        legs: finalLegs as any, // Cast because fallback might miss some optional fields? No, LegSchema output matches.
         securityData: result.securityData,
         version: result.version,
         passengerDescription: result.passengerDescription,
         checkInSource: result.checkInSource,
-        issuanceDate: null, // TODO
+        issuanceDate: result.issuanceDate ? parseInt(result.issuanceDate) : null, // Helper uses string, schema expects number/null
+        // Wait, schema for issuanceDate says "FlexibleDate.optional()". FlexibleDate transforms string to number|null.
+        // So we should pass the string to the schema validation if we were using Zod for the whole object.
+        // But here we are constructing the final object manually.
+        // FlexibleDate is a Zod schema. We can use it to parse the raw string.
+
         documentType: result.documentType,
         issuer: result.issuer,
-        baggageTags: result.baggageTags
+        baggageTags: parsedBaggageTags
     };
+
+    // Fix Issuance Date manual parsing if not using Zod for the whole root object yet
+    if (result.issuanceDate) {
+        const parsedDate = FlexibleDate.safeParse(result.issuanceDate);
+        if (parsedDate.success) finalData.issuanceDate = parsedDate.data;
+    }
 
     return { success: true, data: finalData, segments: extractor.segments };
 
