@@ -36,11 +36,8 @@ export default function Scanner({ onScan, onError }: ScannerProps) {
     scanner.render(
       (decodedText) => {
         onScan(decodedText);
-        // Optionally stop scanning after success? User might want to scan multiple.
-        // For now, let's keep it running but maybe we can add a pause.
       },
       (errorMessage) => {
-        // parse error, ignore it.
         if (onError) onError(errorMessage);
       }
     );

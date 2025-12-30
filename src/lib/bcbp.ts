@@ -98,22 +98,6 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   };
 
   // BCBP Standard Field Lengths (Mandatory Section)
-  // M: Format Code (1)
-  // 1: Number of Legs (1)
-  // PNAME: Passenger Name (20)
-  // E: Electronic Ticket Indicator (1)
-  // PNR: PNR Code (7)
-  // FROM: From City Airport Code (3)
-  // TO: To City Airport Code (3)
-  // CARRIER: Operating Carrier Designator (3)
-  // FLIGHT: Flight Number (5)
-  // DATE: Date of Flight (Julian Date) (3)
-  // COMPT: Compartment Code (1)
-  // SEAT: Seat Number (4)
-  // SEQ: Check-in Sequence Number (5)
-  // STATUS: Passenger Status (1)
-  // SIZE: Variable Size Field (2) - Hexadecimal length of the following variable size field.
-
   let cursor = 0;
 
   // Mapping of segment IDs to data object keys
@@ -131,8 +115,6 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   };
 
   function addSegment(id: string, label: string, length: number, desc: string) {
-    // Some fields are variable length in practice or might be padded with spaces
-    // The standard defines fixed widths for the mandatory block
     const value = raw.substring(cursor, cursor + length);
     segments.push({
       id,
@@ -168,12 +150,7 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   addSegment('checkInSeq', 'Seq', 5, 'Check-in Sequence');
   addSegment('passengerStatus', 'Status', 1, 'Passenger Status');
 
-  // Conditional items (Size of variable field)
-  // This is a simplification. The BCBP standard is complex with variable fields.
-  // We will grab the size field next to determine if we can parse more, but for this first version,
-  // we focus on the mandatory block which covers 90% of user needs.
-
-  // Try to parse variable size field
+  // Conditional items
   if (cursor + 2 <= raw.length) {
        addSegment('varSize', 'Size', 2, 'Length of conditional data');
   }

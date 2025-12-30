@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import Scanner from '../../components/Scanner'
 import BcbpViewer from '../../components/BcbpViewer'
 import { parseBcbp, ParsedBcbp } from '../../lib/bcbp'
@@ -13,13 +13,7 @@ function BoardingPassTool() {
   const [error, setError] = useState<string | null>(null);
   const [rawScan, setRawScan] = useState<string | null>(null);
 
-  const handleScanError = (errorMessage: string) => {
-    // Most scanner errors are just "no barcode found" during scanning
-    // We don't need to display these to users as they're expected
-    console.debug('Scanner error:', errorMessage);
-  };
-
-  const handleScan = (decodedText: string) => {
+  const handleScan = useCallback((decodedText: string) => {
     // Prevent infinite re-renders if same code is scanned repeatedly
     if (decodedText === rawScan) return;
 
@@ -35,7 +29,13 @@ function BoardingPassTool() {
       );
       setParsedData(null);
     }
-  };
+  }, [rawScan]);
+
+  const handleError = useCallback((errorMessage: string) => {
+    // Most scanner errors are just "no barcode found" during scanning
+    // We don't need to display these to users as they're expected
+    console.debug('Scanner error:', errorMessage);
+  }, []);
 
   return (
     <div className="container mx-auto p-4 md:p-8 max-w-5xl">
@@ -50,7 +50,7 @@ function BoardingPassTool() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left Column: Scanner */}
         <div className="lg:col-span-1 space-y-6">
-           <Scanner onScan={handleScan} onError={handleScanError} />
+           <Scanner onScan={handleScan} onError={handleError} />
 
            <div className="bg-gray-900 border border-gray-700 p-4 rounded-xl">
              <h3 className="font-semibold text-brand-accent mb-2">Barcode Types</h3>
