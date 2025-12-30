@@ -22,6 +22,13 @@ const mockParsedData: ParsedBcbp = {
     seat: '12A',
     checkInSeq: '00001',
     passengerStatus: '1',
+  },
+  formatted: {
+    flight: 'BA 123',
+    seat: '12A',
+    date: 'Apr 10',
+    passengerName: 'John Doe',
+    route: 'LHR ➝ JFK'
   }
 };
 
@@ -48,15 +55,12 @@ describe('BcbpViewer', () => {
     // Check accessibility attributes
     expect(segment).toHaveAttribute('tabIndex', '0');
     expect(segment).toHaveAttribute('role', 'button');
-    expect(segment).toHaveAttribute('aria-label', 'Format: Format Code (M)');
+    // Updated expectation to match "Select [Label]" format used in new UI
+    expect(segment).toHaveAttribute('aria-label', 'Select Format');
 
     // Simulate focus
     segment.focus();
     expect(segment).toHaveFocus();
-
-    // Note: Checking for the tooltip visibility via class checks is implementation detail dependent
-    // but we can check if the tooltip text is in the document (it always is) and verify parent classes.
-    // The "group-focus:opacity-100" class ensures it shows on focus.
   });
 
   it('does not render detail cards for empty data', () => {
@@ -74,6 +78,13 @@ describe('BcbpViewer', () => {
         seat: '',
         checkInSeq: '',
         passengerStatus: '',
+      },
+      formatted: {
+        flight: '',
+        seat: '',
+        date: '',
+        passengerName: '',
+        route: ''
       }
     };
 

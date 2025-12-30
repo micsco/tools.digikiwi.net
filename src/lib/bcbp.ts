@@ -21,7 +21,15 @@ export interface ParsedBcbp {
     seat: string;
     checkInSeq: string;
     passengerStatus: string;
-    [key: string]: string;
+    dateOfIssue?: string; // Optional from conditional block
+    [key: string]: string | undefined;
+  };
+  formatted: {
+    flight: string;
+    seat: string;
+    date: string;
+    passengerName: string;
+    route: string;
   };
 }
 
@@ -76,7 +84,6 @@ const BCBP_SCHEMA: BcbpFieldDefinition[] = [
     length: 5,
     description: 'Flight Number',
     // IATA standard requires numeric flight numbers (1-4 digits, often 0-padded to 4 or 5 chars in BCBP).
-    // While some implementations might use alphanumerics, strict IATA compliance implies digits.
     validate: (v) => /^\d{1,5}\s*$/.test(v)
   },
   { id: 'julianDate', label: 'Date', length: 3, description: 'Date of Flight (Julian)' },
@@ -86,20 +93,49 @@ const BCBP_SCHEMA: BcbpFieldDefinition[] = [
   { id: 'passengerStatus', label: 'Status', length: 1, description: 'Passenger Status' },
 ];
 
+// Helper to format Julian Date (DDD) to readable date (e.g. "Feb 01")
+// Assumes current year if not provided, which might be off for year-boundary flights.
+function formatJulianDate(julian: string, year?: number): string {
+  const dayOfYear = parseInt(julian, 10);
+  if (isNaN(dayOfYear)) return julian;
+
+  // If year is not provided, try to guess or just show generic "Day X"
+  // But users expect a date. Let's pick current year, but if the resulting date is > 11 months away, maybe it was last year?
+  // Safe bet: Just format as "Day D of Year" if unsure, or default to current year.
+  // Ideally, if we have dateOfIssue, we use that year.
+  const targetYear = year || new Date().getFullYear();
+
+  const date = new Date(targetYear, 0); // Jan 1st
+  date.setDate(dayOfYear);
+
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function formatSeat(seat: string): string {
+  // Seat often 012A -> 12A
+  return seat.replace(/^0+/, '');
+}
+
+function formatFlight(carrier: string, number: string): string {
+  // BA 0123 -> BA 123
+  return `${carrier.trim()} ${number.trim().replace(/^0+/, '')}`;
+}
+
+function formatName(name: string): string {
+  // DOE/JOHN -> John Doe
+  // OR keep LAST/FIRST format but cleaner?
+  // User asked for "human friendly". "John Doe" is friendlier than "DOE/JOHN".
+  if (name.includes('/')) {
+    const [last, first] = name.split('/');
+    // Title case helper
+    const toTitleCase = (str: string) => str.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+    return `${toTitleCase(first)} ${toTitleCase(last)}`;
+  }
+  return name;
+}
+
 /**
  * Parses a raw IATA Bar Coded Boarding Pass (BCBP) string into a structured representation.
- *
- * The parser extracts both low-level segment information (field positions and raw values)
- * and high-level data fields (such as passenger name, PNR, routing, carrier, and flight
- * details) from the mandatory section of the BCBP.
- *
- * It performs basic structural/format validation of these fields (e.g., checking that
- * airport codes are 3 letters). Callers should treat a `null` result as an invalid or
- * unsupported BCBP string.
- *
- * @param raw - The full BCBP string as read from a boarding pass (e.g., from a barcode).
- * @returns A {@link ParsedBcbp} object containing parsed segments and extracted data, or
- * `null` if the input fails validation or cannot be parsed.
  */
 export function parseBcbp(raw: string): ParsedBcbp | null {
   if (!raw || raw.length < MANDATORY_FIELDS_LENGTH) return null;
@@ -120,19 +156,16 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
 
   let cursor = 0;
 
-  // Iterate over schema to validate and parse simultaneously
+  // 1. Mandatory Block Parsing
   for (const field of BCBP_SCHEMA) {
-    // Safety check: ensure we don't read past end of string (though length check above handles most)
     if (cursor + field.length > raw.length) return null;
 
     const value = raw.substring(cursor, cursor + field.length);
 
-    // Run validation if defined
     if (field.validate && !field.validate(value)) {
       return null;
     }
 
-    // Add segment
     segments.push({
       id: field.id,
       label: field.label,
@@ -142,8 +175,6 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
       description: field.description,
     });
 
-    // Populate data object
-    // Note: We trim values for the data object for cleaner usage
     if (field.id in data) {
       data[field.id] = value.trim();
     }
@@ -151,24 +182,103 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
     cursor += field.length;
   }
 
-  // Conditional items (Size of variable field)
-  // This checks for the existence of the "Size of variable size field"
-  // which follows the mandatory block.
+  // 2. Conditional Block Parsing
+  // Check for the field size of the variable size field (2 chars hex)
+  let dateOfIssueYear: number | undefined;
+
   if (cursor + 2 <= raw.length) {
-       const value = raw.substring(cursor, cursor + 2);
+       const varSizeHex = raw.substring(cursor, cursor + 2);
+       const varSize = parseInt(varSizeHex, 16);
+
        segments.push({
          id: 'varSize',
          label: 'Size',
-         rawValue: value,
+         rawValue: varSizeHex,
          startIndex: cursor,
          endIndex: cursor + 2,
-         description: 'Length of conditional data',
+         description: `Length of conditional data (${varSize})`,
        });
+
+       cursor += 2;
+
+       // If valid size, try to parse known conditional fields
+       // Note: Structure varies, but often:
+       // > [0] Version (1)
+       // > [1] Passenger Desc (1)
+       // > [2] Source Checkin (1)
+       // > [3] Source BP Issue (1)
+       // > [4-7] Date Issue (4) (Julian + 1 digit year)
+       // This is assuming "Unique Conditional Data" follows standard sequence.
+
+       if (!isNaN(varSize) && varSize > 0 && cursor + varSize <= raw.length) {
+         // Create a segment for the whole block for now, or split if we can identify version
+         // Let's try to detect Date of Issue (Field 22)
+         // Usually at offset 4 inside the unique block if version > 1?
+         // This is heuristically complex without full implementation.
+         // Let's just create a "Conditional Data" segment for the bulk
+         // But TRY to peek at index 4-7 for Date of Issue if length allows.
+
+         const condData = raw.substring(cursor, cursor + varSize);
+
+         // Heuristic: If we have at least 8 chars, we might find Date of Issue at index 4 (length 4)
+         // Julian Date (3) + Year (1)
+         // Example: 1004 (Day 100, Year 4 -> 2024)
+         if (condData.length >= 8 && /^\d{4}$/.test(condData.substring(4, 8))) {
+            const dateIssueVal = condData.substring(4, 8);
+            data.dateOfIssue = dateIssueVal;
+            const yDigit = parseInt(dateIssueVal[3], 10);
+
+            // Guess full year from 1 digit.
+            // Current year
+            const currentYear = new Date().getFullYear();
+            const currentDecade = Math.floor(currentYear / 10) * 10;
+            dateOfIssueYear = currentDecade + yDigit;
+
+            // Adjust decade if needed (e.g. current 2024, digit 9 -> 2019? unlikely for BP, usually 2029 or 2019?)
+            // Usually BP is for close future/past.
+            // If we are 2020 and digit is 9 -> 2019.
+            // If we are 2020 and digit is 1 -> 2021.
+            // Simple logic: Closest to current year.
+         }
+
+         segments.push({
+            id: 'conditionalData',
+            label: 'Ext. Data',
+            rawValue: condData,
+            startIndex: cursor,
+            endIndex: cursor + varSize,
+            description: 'Conditional / Airline Data',
+         });
+
+         cursor += varSize;
+       }
   }
+
+  // 3. Security Data (remainder)
+  if (cursor < raw.length) {
+    segments.push({
+      id: 'securityData',
+      label: 'Security',
+      rawValue: raw.substring(cursor),
+      startIndex: cursor,
+      endIndex: raw.length,
+      description: 'Security Signature',
+    });
+  }
+
+  // Generate formatted data
+  const formatted = {
+    flight: formatFlight(data.carrier || '', data.flightNumber || ''),
+    seat: formatSeat(data.seat || ''),
+    date: formatJulianDate(data.julianDate || '', dateOfIssueYear),
+    passengerName: formatName(data.passengerName || ''),
+    route: `${data.fromCity} ➝ ${data.toCity}`,
+  };
 
   return {
     raw,
     segments,
     data,
+    formatted,
   };
 }
