@@ -53,6 +53,10 @@ export default function Scanner({ onScan, onError }: ScannerProps) {
         scannerRef.current = null;
       }
     };
+    // We intentionally omit onScan and onError from the dependency array because
+    // we only want to initialize the scanner once. If these callbacks change,
+    // reinitializing the scanner would be disruptive to users. The callbacks are
+    // called with the latest values due to JavaScript closures.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

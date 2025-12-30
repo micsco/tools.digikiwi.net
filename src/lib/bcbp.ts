@@ -54,15 +54,16 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   }
 
   // Extract key fields for validation (based on BCBP mandatory section offsets)
+  // Note: substring(start, end) extracts from start (inclusive) to end (exclusive)
   // 0: Format Code (1)
   // 1: Number of Legs (1)
   // 2-21: Passenger Name (20)
   // 22: Electronic Ticket Indicator (1)
   // 23-29: PNR Code (7)
-  // 30-32: From City Airport Code (3)
-  // 33-35: To City Airport Code (3)
-  // 36-38: Operating Carrier Designator (3)
-  // 39-43: Flight Number (5)
+  // 30-32: From City Airport Code (3) [substring(30, 33)]
+  // 33-35: To City Airport Code (3) [substring(33, 36)]
+  // 36-38: Operating Carrier Designator (3) [substring(36, 39)]
+  // 39-43: Flight Number (5) [substring(39, 44)]
   const fromCityField = raw.substring(30, 33).trim();
   const toCityField = raw.substring(33, 36).trim();
   const carrierField = raw.substring(36, 39).trim();
