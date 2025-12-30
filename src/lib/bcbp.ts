@@ -1,3 +1,5 @@
+import { BCBP_REFERENCE, AIRLINE_NAMES, AIRPORT_NAMES } from '../data/bcbp_reference';
+
 export interface BcbpSegment {
   id: string;
   label: string;
@@ -5,6 +7,10 @@ export interface BcbpSegment {
   startIndex: number;
   endIndex: number;
   description: string;
+  meta?: {
+    description?: string;
+    possibleValues?: Record<string, string>;
+  };
 }
 
 export interface ParsedBcbp {
@@ -22,7 +28,17 @@ export interface ParsedBcbp {
     seat: string;
     checkInSeq: string;
     passengerStatus: string;
-    dateOfIssue?: string; // Optional from conditional block
+    dateOfIssue?: string;
+    documentType?: string;
+    airlineDesignator?: string;
+    documentFormSerialNumber?: string;
+    selecteeIndicator?: string;
+    internationalDocVerification?: string;
+    marketingCarrier?: string;
+    frequentFlyerAirline?: string;
+    frequentFlyerNumber?: string;
+    industryDiscount?: string;
+    freeBaggageAllowance?: string;
     [key: string]: string | undefined;
   };
   formatted: {
@@ -32,6 +48,9 @@ export interface ParsedBcbp {
     passengerName: string;
     route: string;
     classOfService: string;
+    fromAirportFull: string;
+    toAirportFull: string;
+    airlineFull: string;
   };
 }
 
@@ -41,6 +60,7 @@ interface BcbpFieldDefinition {
   length: number;
   description: string;
   validate?: (value: string) => boolean;
+  lookup?: Record<string, string>;
 }
 
 const MANDATORY_FIELDS_LENGTH = 60;
@@ -51,8 +71,6 @@ const BCBP_SCHEMA: BcbpFieldDefinition[] = [
     label: 'Format',
     length: 1,
     description: 'Format Code (M = Mandatory)',
-    // Only 'M' (Mandatory + Unique items) is currently supported.
-    // 'S' (Mandatory only) is another valid IATA format code but not implemented here.
     validate: (v) => v === 'M'
   },
   { id: 'legs', label: 'Legs', length: 1, description: 'Number of Legs Encoded' },
@@ -85,44 +103,49 @@ const BCBP_SCHEMA: BcbpFieldDefinition[] = [
     label: 'Flight',
     length: 5,
     description: 'Flight Number',
-    // IATA standard requires numeric flight numbers (1-4 digits, often 0-padded to 4 or 5 chars in BCBP).
     validate: (v) => /^\d{1,5}\s*$/.test(v)
   },
   { id: 'julianDate', label: 'Date', length: 3, description: 'Date of Flight (Julian Day 001-366)' },
-  { id: 'compartment', label: 'Class', length: 1, description: 'Compartment Code (Class of Service)' },
+  {
+    id: 'compartment',
+    label: 'Class',
+    length: 1,
+    description: 'Compartment Code (Class of Service)',
+    lookup: BCBP_REFERENCE.compartment
+  },
   { id: 'seat', label: 'Seat', length: 4, description: 'Seat Number' },
   { id: 'checkInSeq', label: 'Seq', length: 5, description: 'Check-in Sequence Number' },
-  { id: 'passengerStatus', label: 'Status', length: 1, description: 'Passenger Status' },
+  {
+    id: 'passengerStatus',
+    label: 'Status',
+    length: 1,
+    description: 'Passenger Status',
+    lookup: BCBP_REFERENCE.passengerStatus
+  },
 ];
 
-// Helper to format Julian Date (DDD) to readable date (e.g. "Feb 01")
 function formatJulianDate(julian: string, year?: number): string {
   const dayOfYear = parseInt(julian, 10);
   if (isNaN(dayOfYear)) return julian;
 
   const targetYear = year || new Date().getFullYear();
-
-  const date = new Date(targetYear, 0); // Jan 1st
+  const date = new Date(targetYear, 0);
   date.setDate(dayOfYear);
 
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function formatSeat(seat: string): string {
-  // Seat often 012A -> 12A
   return seat.replace(/^0+/, '');
 }
 
 function formatFlight(carrier: string, number: string): string {
-  // BA 0123 -> BA 123
   return `${carrier.trim()} ${number.trim().replace(/^0+/, '')}`;
 }
 
-function formatName(name: string): string {
-  // DOE/JOHN -> John Doe
+function formatPassengerName(name: string): string {
   if (name.includes('/')) {
     const [last, first] = name.split('/');
-    // Title case helper
     const toTitleCase = (str: string) => str.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
     return `${toTitleCase(first)} ${toTitleCase(last)}`;
   }
@@ -130,41 +153,21 @@ function formatName(name: string): string {
 }
 
 function formatClass(code: string): string {
-  // Common IATA codes mapping
-  // F: First, J: Business, W: Premium Economy, Y: Economy
-  // C, D, I, Z -> Business
-  // A, P -> First
-  // B, H, K, M, L, V, S, N, Q, O... -> Economy
-
   const c = code.trim().toUpperCase();
-  switch (c) {
-    case 'F':
-    case 'A':
-    case 'P':
-      return `First Class (${c})`;
-    case 'J':
-    case 'C':
-    case 'D':
-    case 'I':
-    case 'Z':
-      return `Business Class (${c})`;
-    case 'W':
-      return `Premium Economy (${c})`;
-    case 'Y':
-    case 'B':
-    case 'H':
-    case 'K':
-    case 'M':
-    case 'L':
-    case 'V':
-    case 'S':
-    case 'N':
-    case 'Q':
-    case 'O':
-      return `Economy Class (${c})`;
-    default:
-      return c.length > 0 ? `Class ${c}` : '';
-  }
+  const desc = BCBP_REFERENCE.compartment[c];
+  return desc ? `${desc} (${c})` : (c.length > 0 ? `Class ${c}` : '');
+}
+
+function getAirportInfo(code: string) {
+  const info = AIRPORT_NAMES[code.trim().toUpperCase()];
+  if (info) return `${code} - ${info.name} (${info.city})`;
+  return code;
+}
+
+function getAirlineName(code: string) {
+  const name = AIRLINE_NAMES[code.trim().toUpperCase()];
+  if (name) return name;
+  return code;
 }
 
 /**
@@ -200,13 +203,20 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
       return null;
     }
 
+    const meta: BcbpSegment['meta'] = {};
+    if (field.lookup) {
+      meta.possibleValues = field.lookup;
+      meta.description = field.lookup[value.trim()];
+    }
+
     segments.push({
       id: field.id,
       label: field.label,
       rawValue: value,
       startIndex: cursor,
       endIndex: cursor + field.length,
-      description: field.description,
+      description: meta.description || field.description,
+      meta,
     });
 
     if (field.id in data) {
@@ -220,48 +230,114 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
   let dateOfIssueYear: number | undefined;
 
   if (cursor + 2 <= raw.length) {
-       const varSizeHex = raw.substring(cursor, cursor + 2);
-       const varSize = parseInt(varSizeHex, 16);
+    const varSizeHex = raw.substring(cursor, cursor + 2);
+    const varSize = parseInt(varSizeHex, 16);
 
-       segments.push({
-         id: 'varSize',
-         label: 'Size',
-         rawValue: varSizeHex,
-         startIndex: cursor,
-         endIndex: cursor + 2,
-         description: `Length of conditional data (${varSize})`,
-       });
+    segments.push({
+      id: 'varSize',
+      label: 'Size',
+      rawValue: varSizeHex,
+      startIndex: cursor,
+      endIndex: cursor + 2,
+      description: `Length of conditional data (${varSize})`,
+    });
 
-       cursor += 2;
+    cursor += 2;
 
-       if (!isNaN(varSize) && varSize > 0 && cursor + varSize <= raw.length) {
-         const condData = raw.substring(cursor, cursor + varSize);
+    if (!isNaN(varSize) && varSize > 0 && cursor + varSize <= raw.length) {
+      const condDataEnd = cursor + varSize;
 
-         // Heuristic: If we have at least 8 chars, we might find Date of Issue at index 4 (length 4)
-         // Julian Date (3) + Year (1)
-         // Example: 1004 (Day 100, Year 4 -> 2024)
-         if (condData.length >= 8 && /^\d{4}$/.test(condData.substring(4, 8))) {
-            const dateIssueVal = condData.substring(4, 8);
-            data.dateOfIssue = dateIssueVal;
-            const yDigit = parseInt(dateIssueVal[3], 10);
+      // Attempt to parse standard unique conditional data
+      // Structure often starts with '>' (Field 15) then Ver (Field 16)
+      if (raw[cursor] === '>') {
+        segments.push({
+          id: 'startConditional',
+          label: 'Start',
+          rawValue: '>',
+          startIndex: cursor,
+          endIndex: cursor + 1,
+          description: 'Start of Conditional Data'
+        });
+        cursor++;
 
-            // Guess full year from 1 digit.
-            const currentYear = new Date().getFullYear();
-            const currentDecade = Math.floor(currentYear / 10) * 10;
-            dateOfIssueYear = currentDecade + yDigit;
+        // IATA Standard Fields after '>'
+        // 16. Ver # (1)
+        // 17. Pax Ref (Var)
+        // But often it's fixed structure for Versions.
+        // Let's do a best-effort robust parse of sequential fields if length allows.
+
+        // Field 16: Version
+        if (cursor < condDataEnd) {
+             const ver = raw[cursor];
+             segments.push({ id: 'version', label: 'Ver', rawValue: ver, startIndex: cursor, endIndex: cursor + 1, description: 'Format Version' });
+             cursor++;
+        }
+
+        // Variable length fields often follow.
+        // Without a strict parser for every version, we look for heuristic matches.
+
+        // Remaining conditional block
+        if (cursor < condDataEnd) {
+             const remaining = raw.substring(cursor, condDataEnd);
+
+             // Extract Date of Issue (Julian) if possible
+             // Often field 22 or nearby. It is 4 digits.
+             // We use the previous heuristic: finding 4 digits where 3 are 001-366
+             const dateMatch = remaining.match(/(\d{4})/);
+             if (dateMatch) {
+                 const possibleDate = dateMatch[1];
+                 const day = parseInt(possibleDate.substring(0, 3));
+                 if (day > 0 && day <= 366) {
+                     data.dateOfIssue = possibleDate;
+                     const yDigit = parseInt(possibleDate[3], 10);
+                     const currentYear = new Date().getFullYear();
+                     const currentDecade = Math.floor(currentYear / 10) * 10;
+                     dateOfIssueYear = currentDecade + yDigit;
+
+                     // We don't segment it exactly because we aren't sure of position,
+                     // but we extract the data value.
+                 }
+             }
+
+             segments.push({
+                 id: 'conditionalContent',
+                 label: 'Airline Data',
+                 rawValue: remaining,
+                 startIndex: cursor,
+                 endIndex: condDataEnd,
+                 description: 'Variable Length Airline Data'
+             });
+             cursor = condDataEnd;
+        }
+
+      } else {
+         // Non-standard or just raw block
+         const rawVal = raw.substring(cursor, condDataEnd);
+
+         // Try heuristic extraction of Date of Issue even if not standard structure
+         if (rawVal.length >= 8 && /^\d{4}$/.test(rawVal.substring(4, 8))) {
+             const dateIssueVal = rawVal.substring(4, 8);
+             const day = parseInt(dateIssueVal.substring(0, 3));
+             if (day > 0 && day <= 366) {
+                 data.dateOfIssue = dateIssueVal;
+                 const yDigit = parseInt(dateIssueVal[3], 10);
+                 const currentYear = new Date().getFullYear();
+                 const currentDecade = Math.floor(currentYear / 10) * 10;
+                 dateOfIssueYear = currentDecade + yDigit;
+             }
          }
 
          segments.push({
             id: 'conditionalData',
             label: 'Ext. Data',
-            rawValue: condData,
+            rawValue: rawVal,
             startIndex: cursor,
-            endIndex: cursor + varSize,
+            endIndex: condDataEnd,
             description: 'Conditional / Airline Data',
          });
-
-         cursor += varSize;
-       }
+         cursor = condDataEnd;
+      }
+    }
   }
 
   // 3. Security Data (remainder)
@@ -281,9 +357,12 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
     flight: formatFlight(data.carrier || '', data.flightNumber || ''),
     seat: formatSeat(data.seat || ''),
     date: formatJulianDate(data.julianDate || '', dateOfIssueYear),
-    passengerName: formatName(data.passengerName || ''),
+    passengerName: formatPassengerName(data.passengerName || ''),
     route: `${data.fromCity} ➝ ${data.toCity}`,
     classOfService: formatClass(data.compartment || ''),
+    fromAirportFull: getAirportInfo(data.fromCity || ''),
+    toAirportFull: getAirportInfo(data.toCity || ''),
+    airlineFull: getAirlineName(data.carrier || ''),
   };
 
   return {

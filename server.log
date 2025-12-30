@@ -1,0 +1,11 @@
+
+> dev
+> vite dev --port 3000
+
+
+  VITE v7.3.0  ready in 1528 ms
+
+  ➜  Local:   http://localhost:3000/
+  ➜  Network: use --host to expose
+11:31:30 AM [vite] (client) hmr update /src/styles.css?direct, /src/routes/tools/boarding-pass.tsx, /src/routes/tools/boarding-pass.tsx?tsr-split=component
+11:31:30 AM [vite] (ssr) page reload src/routes/tools/boarding-pass.tsx
