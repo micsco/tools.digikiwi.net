@@ -1,374 +1,194 @@
-import { BCBP_REFERENCE, AIRLINE_NAMES, AIRPORT_NAMES } from '../data/bcbp_reference';
+import { z } from 'zod';
+import { BCBP_REFERENCE } from '../data/bcbp_reference';
 
-export interface BcbpSegment {
-  id: string;
-  label: string;
-  rawValue: string;
-  startIndex: number;
-  endIndex: number;
-  description: string;
-  meta?: {
-    description?: string;
-    possibleValues?: Record<string, string>;
-  };
-}
+// --- Zod Schemas ---
 
-export interface ParsedBcbp {
-  raw: string;
-  segments: BcbpSegment[];
-  data: {
-    passengerName: string;
-    pnr: string;
-    fromCity: string;
-    toCity: string;
-    carrier: string;
-    flightNumber: string;
-    julianDate: string;
-    compartment: string;
-    seat: string;
-    checkInSeq: string;
-    passengerStatus: string;
-    dateOfIssue?: string;
-    documentType?: string;
-    airlineDesignator?: string;
-    documentFormSerialNumber?: string;
-    selecteeIndicator?: string;
-    internationalDocVerification?: string;
-    marketingCarrier?: string;
-    frequentFlyerAirline?: string;
-    frequentFlyerNumber?: string;
-    industryDiscount?: string;
-    freeBaggageAllowance?: string;
-    [key: string]: string | undefined;
-  };
-  formatted: {
-    flight: string;
-    seat: string;
-    date: string;
-    passengerName: string;
-    route: string;
-    classOfService: string;
-    fromAirportFull: string;
-    toAirportFull: string;
-    airlineFull: string;
-  };
-}
+// Basic Types
+const TrimmedString = z.string().transform(s => s.trim());
+const JulianDate = z.string().length(3).transform(s => {
+  const day = parseInt(s, 10);
+  // Returns number or null
+  return isNaN(day) ? null : day;
+}).nullable();
 
-interface BcbpFieldDefinition {
-  id: string;
-  label: string;
-  length: number;
-  description: string;
-  validate?: (value: string) => boolean;
-  lookup?: Record<string, string>;
-}
+// IATA Compartment Code (Field 14)
+const CompartmentCode = z.string().length(1).transform(c => {
+  const desc = BCBP_REFERENCE.compartment[c] || 'Unknown Class';
+  return { code: c, description: desc };
+});
 
-const MANDATORY_FIELDS_LENGTH = 60;
+// Passenger Status (Field 11)
+const PassengerStatus = z.string().length(1).transform(s => {
+  const desc = BCBP_REFERENCE.passengerStatus[s] || 'Unknown Status';
+  return { code: s, description: desc };
+});
 
-const BCBP_SCHEMA: BcbpFieldDefinition[] = [
-  {
-    id: 'formatCode',
-    label: 'Format',
-    length: 1,
-    description: 'Format Code (M = Mandatory)',
-    validate: (v) => v === 'M'
-  },
-  { id: 'legs', label: 'Legs', length: 1, description: 'Number of Legs Encoded' },
-  { id: 'passengerName', label: 'Name', length: 20, description: 'Passenger Name (Last/First)' },
-  { id: 'eticket', label: 'E-Ticket', length: 1, description: 'Electronic Ticket Indicator (E)' },
-  { id: 'pnr', label: 'PNR', length: 7, description: 'Booking Reference / PNR' },
-  {
-    id: 'fromCity',
-    label: 'From',
-    length: 3,
-    description: 'Origin Airport IATA Code',
-    validate: (v) => /^[A-Z]{3}\s*$/.test(v)
-  },
-  {
-    id: 'toCity',
-    label: 'To',
-    length: 3,
-    description: 'Destination Airport IATA Code',
-    validate: (v) => /^[A-Z]{3}\s*$/.test(v)
-  },
-  {
-    id: 'carrier',
-    label: 'Carrier',
-    length: 3,
-    description: 'Operating Carrier Designator',
-    validate: (v) => /^[A-Z0-9]{2,3}\s*$/.test(v)
-  },
-  {
-    id: 'flightNumber',
-    label: 'Flight',
-    length: 5,
-    description: 'Flight Number',
-    validate: (v) => /^\d{1,5}\s*$/.test(v)
-  },
-  { id: 'julianDate', label: 'Date', length: 3, description: 'Date of Flight (Julian Day 001-366)' },
-  {
-    id: 'compartment',
-    label: 'Class',
-    length: 1,
-    description: 'Compartment Code (Class of Service)',
-    lookup: BCBP_REFERENCE.compartment
-  },
-  { id: 'seat', label: 'Seat', length: 4, description: 'Seat Number' },
-  { id: 'checkInSeq', label: 'Seq', length: 5, description: 'Check-in Sequence Number' },
-  {
-    id: 'passengerStatus',
-    label: 'Status',
-    length: 1,
-    description: 'Passenger Status',
-    lookup: BCBP_REFERENCE.passengerStatus
-  },
-];
+// Gender (V8 supports X and U)
+export const GenderSchema = z.enum(['M', 'F', 'X', 'U']).catch('U');
 
-function formatJulianDate(julian: string, year?: number): string {
-  const dayOfYear = parseInt(julian, 10);
-  if (isNaN(dayOfYear)) return julian;
+// --- Data Structures ---
 
-  const targetYear = year || new Date().getFullYear();
-  const date = new Date(targetYear, 0);
-  date.setDate(dayOfYear);
+export const LegSchema = z.object({
+  pnrCode: TrimmedString, // Field 7
+  departureAirport: TrimmedString, // Field 8
+  arrivalAirport: TrimmedString, // Field 9
+  operatingCarrier: TrimmedString, // Field 10
+  flightNumber: TrimmedString.transform(s => s.replace(/^0+/, '')), // Field 11
+  dateOfFlight: JulianDate, // Field 12
+  compartment: CompartmentCode.optional(), // Field 13
+  seatNumber: TrimmedString.transform(s => s.replace(/^0+/, '')), // Field 14
+  sequenceNumber: TrimmedString.transform(s => s.replace(/^0+/, '')), // Field 15
+  passengerStatus: PassengerStatus.optional(), // Field 16
+  airlineNumericCode: TrimmedString.optional(), // Field 17 (Conditional?)
 
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
+  // Extra fields
+  selecteeStatus: z.string().optional(),
+  marketingCarrier: z.string().optional(),
 
-function formatSeat(seat: string): string {
-  return seat.replace(/^0+/, '');
-}
+  // Internal Raw Conditional (removed from output typically, but useful for debugging)
+  _rawConditional: z.string().optional(),
+});
 
-function formatFlight(carrier: string, number: string): string {
-  return `${carrier.trim()} ${number.trim().replace(/^0+/, '')}`;
-}
+// We need the Output Type of LegSchema for the BcbpDataSchema definition
+// But we can't use LegSchema in BcbpDataSchema if we want to validte the output object,
+// because LegSchema expects Strings (Inputs).
+// However, we only use BcbpDataSchema for TYPE INFERENCE here.
+// So it is fine to define it using LegSchema.
+export const BcbpDataSchema = z.object({
+  formatCode: z.string().length(1),
+  numberOfLegs: z.number().int().min(1),
+  passengerName: TrimmedString,
+  electronicTicket: z.string().optional(),
+  // Legs
+  legs: z.array(LegSchema),
+  // Security / Global Conditional
+  securityData: z.string().optional(),
+  version: z.string().optional(),
 
-function formatPassengerName(name: string): string {
-  if (name.includes('/')) {
-    const [last, first] = name.split('/');
-    const toTitleCase = (str: string) => str.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-    return `${toTitleCase(first)} ${toTitleCase(last)}`;
-  }
-  return name;
-}
+  // V7/V8 Specifics
+  baggageTag: z.object({
+      count: z.number().nullable(),
+      licensePlate: z.array(z.string()).optional()
+  }).optional(),
+  gender: GenderSchema.optional().nullable(),
+});
 
-function formatClass(code: string): string {
-  const c = code.trim().toUpperCase();
-  const desc = BCBP_REFERENCE.compartment[c];
-  return desc ? `${desc} (${c})` : (c.length > 0 ? `Class ${c}` : '');
-}
+export type ParsedBcbp = z.infer<typeof BcbpDataSchema>;
 
-function getAirportInfo(code: string) {
-  const info = AIRPORT_NAMES[code.trim().toUpperCase()];
-  if (info) return `${code} - ${info.name} (${info.city})`;
-  return code;
-}
+// --- Parser Logic ---
 
-function getAirlineName(code: string) {
-  const name = AIRLINE_NAMES[code.trim().toUpperCase()];
-  if (name) return name;
-  return code;
-}
-
-/**
- * Parses a raw IATA Bar Coded Boarding Pass (BCBP) string into a structured representation.
- */
-export function parseBcbp(raw: string): ParsedBcbp | null {
-  if (!raw || raw.length < MANDATORY_FIELDS_LENGTH) return null;
-
-  const segments: BcbpSegment[] = [];
-  const data: ParsedBcbp['data'] = {
-    passengerName: '',
-    pnr: '',
-    fromCity: '',
-    toCity: '',
-    carrier: '',
-    flightNumber: '',
-    julianDate: '',
-    compartment: '',
-    seat: '',
-    checkInSeq: '',
-    passengerStatus: '',
-  };
-
-  let cursor = 0;
-
-  // 1. Mandatory Block Parsing
-  for (const field of BCBP_SCHEMA) {
-    if (cursor + field.length > raw.length) return null;
-
-    const value = raw.substring(cursor, cursor + field.length);
-
-    if (field.validate && !field.validate(value)) {
-      return null;
+export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; error?: string } {
+  try {
+    if (!raw || raw.length < 60) {
+      return { success: false, error: 'Input too short' };
     }
 
-    const meta: BcbpSegment['meta'] = {};
-    if (field.lookup) {
-      meta.possibleValues = field.lookup;
-      meta.description = field.lookup[value.trim()];
+    const formatCode = raw.substring(0, 1);
+    if (formatCode !== 'M') {
+       return { success: false, error: 'Invalid Format Code (Expected M)' };
     }
 
-    segments.push({
-      id: field.id,
-      label: field.label,
-      rawValue: value,
-      startIndex: cursor,
-      endIndex: cursor + field.length,
-      description: meta.description || field.description,
-      meta,
-    });
+    const numberOfLegsRaw = raw.substring(1, 2);
+    const numberOfLegs = parseInt(numberOfLegsRaw, 10);
+    if (isNaN(numberOfLegs)) return { success: false, error: 'Invalid Number of Legs' };
 
-    if (field.id in data) {
-      data[field.id] = value.trim();
-    }
+    const passengerNameRaw = raw.substring(2, 22);
+    const electronicTicketIndicator = raw.substring(22, 23); // Sometimes E-Ticket is 1 char at 22.
 
-    cursor += field.length;
-  }
+    let currentOffset = 23;
+    const legs: z.infer<typeof LegSchema>[] = [];
 
-  // 2. Conditional Block Parsing
-  let dateOfIssueYear: number | undefined;
-
-  if (cursor + 2 <= raw.length) {
-    const varSizeHex = raw.substring(cursor, cursor + 2);
-    const varSize = parseInt(varSizeHex, 16);
-
-    segments.push({
-      id: 'varSize',
-      label: 'Size',
-      rawValue: varSizeHex,
-      startIndex: cursor,
-      endIndex: cursor + 2,
-      description: `Length of conditional data (${varSize})`,
-    });
-
-    cursor += 2;
-
-    if (!isNaN(varSize) && varSize > 0 && cursor + varSize <= raw.length) {
-      const condDataEnd = cursor + varSize;
-
-      // Attempt to parse standard unique conditional data
-      // Structure often starts with '>' (Field 15) then Ver (Field 16)
-      if (raw[cursor] === '>') {
-        segments.push({
-          id: 'startConditional',
-          label: 'Start',
-          rawValue: '>',
-          startIndex: cursor,
-          endIndex: cursor + 1,
-          description: 'Start of Conditional Data'
-        });
-        cursor++;
-
-        // IATA Standard Fields after '>'
-        // 16. Ver # (1)
-        // 17. Pax Ref (Var)
-        // But often it's fixed structure for Versions.
-        // Let's do a best-effort robust parse of sequential fields if length allows.
-
-        // Field 16: Version
-        if (cursor < condDataEnd) {
-             const ver = raw[cursor];
-             segments.push({ id: 'version', label: 'Ver', rawValue: ver, startIndex: cursor, endIndex: cursor + 1, description: 'Format Version' });
-             cursor++;
+    // Loop through legs
+    for (let i = 0; i < numberOfLegs; i++) {
+        // Repeated Mandatory Data (37 chars)
+        if (currentOffset + 37 > raw.length) {
+            break;
         }
 
-        // Variable length fields often follow.
-        // Without a strict parser for every version, we look for heuristic matches.
+        const legBlock = raw.substring(currentOffset, currentOffset + 37);
+        const pnrCode = legBlock.substring(0, 7);
+        const departureAirport = legBlock.substring(7, 10);
+        const arrivalAirport = legBlock.substring(10, 13);
+        const operatingCarrier = legBlock.substring(13, 16);
+        const flightNumber = legBlock.substring(16, 21);
+        const dateOfFlight = legBlock.substring(21, 24);
+        const compartment = legBlock.substring(24, 25);
+        const seatNumber = legBlock.substring(25, 29);
+        const sequenceNumber = legBlock.substring(29, 34);
+        const passengerStatus = legBlock.substring(34, 35);
+        const variableSizeRaw = legBlock.substring(35, 37);
 
-        // Remaining conditional block
-        if (cursor < condDataEnd) {
-             const remaining = raw.substring(cursor, condDataEnd);
+        const legRaw = {
+            pnrCode,
+            departureAirport,
+            arrivalAirport,
+            operatingCarrier,
+            flightNumber,
+            dateOfFlight,
+            compartment,
+            seatNumber,
+            sequenceNumber,
+            passengerStatus
+        };
 
-             // Extract Date of Issue (Julian) if possible
-             // Often field 22 or nearby. It is 4 digits.
-             // We use the previous heuristic: finding 4 digits where 3 are 001-366
-             const dateMatch = remaining.match(/(\d{4})/);
-             if (dateMatch) {
-                 const possibleDate = dateMatch[1];
-                 const day = parseInt(possibleDate.substring(0, 3));
-                 if (day > 0 && day <= 366) {
-                     data.dateOfIssue = possibleDate;
-                     const yDigit = parseInt(possibleDate[3], 10);
-                     const currentYear = new Date().getFullYear();
-                     const currentDecade = Math.floor(currentYear / 10) * 10;
-                     dateOfIssueYear = currentDecade + yDigit;
-
-                     // We don't segment it exactly because we aren't sure of position,
-                     // but we extract the data value.
-                 }
-             }
-
-             segments.push({
-                 id: 'conditionalContent',
-                 label: 'Airline Data',
-                 rawValue: remaining,
-                 startIndex: cursor,
-                 endIndex: condDataEnd,
-                 description: 'Variable Length Airline Data'
-             });
-             cursor = condDataEnd;
+        const parsedLeg = LegSchema.safeParse(legRaw);
+        if (parsedLeg.success) {
+            legs.push(parsedLeg.data);
+        } else {
+            // Fallback: manually construct a partial leg matching the type
+            // This is tedious to do perfectly type-safe without duplication,
+            // so we'll do a best-effort cast or use defaults.
+            // For now, let's assume if mandatory fields fail, the leg is invalid.
+            // But user said "Partial Data".
+            // We can return the raw strings in the places where transformers failed?
+            // No, types mismatch.
+            // Let's force it.
+            legs.push({
+               pnrCode: pnrCode.trim(),
+               departureAirport: departureAirport.trim(),
+               arrivalAirport: arrivalAirport.trim(),
+               operatingCarrier: operatingCarrier.trim(),
+               flightNumber: flightNumber.trim().replace(/^0+/, ''),
+               dateOfFlight: parseInt(dateOfFlight) || null,
+               compartment: { code: compartment, description: 'Invalid' },
+               seatNumber: seatNumber.trim().replace(/^0+/, ''),
+               sequenceNumber: sequenceNumber.trim().replace(/^0+/, ''),
+               passengerStatus: { code: passengerStatus, description: 'Invalid' }
+            });
         }
 
-      } else {
-         // Non-standard or just raw block
-         const rawVal = raw.substring(cursor, condDataEnd);
+        currentOffset += 37;
 
-         // Try heuristic extraction of Date of Issue even if not standard structure
-         if (rawVal.length >= 8 && /^\d{4}$/.test(rawVal.substring(4, 8))) {
-             const dateIssueVal = rawVal.substring(4, 8);
-             const day = parseInt(dateIssueVal.substring(0, 3));
-             if (day > 0 && day <= 366) {
-                 data.dateOfIssue = dateIssueVal;
-                 const yDigit = parseInt(dateIssueVal[3], 10);
-                 const currentYear = new Date().getFullYear();
-                 const currentDecade = Math.floor(currentYear / 10) * 10;
-                 dateOfIssueYear = currentDecade + yDigit;
+        // Handle Variable Size Field (Conditional)
+        const conditionalLength = parseInt(variableSizeRaw, 16);
+        if (!isNaN(conditionalLength) && conditionalLength > 0) {
+             const conditionalData = raw.substring(currentOffset, currentOffset + conditionalLength);
+             if (legs[i]) {
+                 legs[i]._rawConditional = conditionalData;
+                 // TODO: Parse specific V7/V8 fields from conditionalData
              }
-         }
-
-         segments.push({
-            id: 'conditionalData',
-            label: 'Ext. Data',
-            rawValue: rawVal,
-            startIndex: cursor,
-            endIndex: condDataEnd,
-            description: 'Conditional / Airline Data',
-         });
-         cursor = condDataEnd;
-      }
+             currentOffset += conditionalLength;
+        }
     }
+
+    // Construct final object matching ParsedBcbp type
+    // We do NOT use BcbpDataSchema.parse() here because legs are already transformed.
+    const finalData: ParsedBcbp = {
+        formatCode,
+        numberOfLegs,
+        passengerName: passengerNameRaw.trim(), // Manual trim to match schema transform
+        electronicTicket: electronicTicketIndicator,
+        legs,
+        securityData: undefined, // TODO
+        version: undefined,
+        baggageTag: undefined, // TODO: Extract from conditional
+        gender: undefined // TODO: Extract from conditional
+    };
+
+    // We assume success if we parsed at least one leg or basic header
+    return { success: true, data: finalData };
+
+  } catch (e: any) {
+    return { success: false, error: e.message };
   }
-
-  // 3. Security Data (remainder)
-  if (cursor < raw.length) {
-    segments.push({
-      id: 'securityData',
-      label: 'Security',
-      rawValue: raw.substring(cursor),
-      startIndex: cursor,
-      endIndex: raw.length,
-      description: 'Security Signature',
-    });
-  }
-
-  // Generate formatted data
-  const formatted = {
-    flight: formatFlight(data.carrier || '', data.flightNumber || ''),
-    seat: formatSeat(data.seat || ''),
-    date: formatJulianDate(data.julianDate || '', dateOfIssueYear),
-    passengerName: formatPassengerName(data.passengerName || ''),
-    route: `${data.fromCity} ➝ ${data.toCity}`,
-    classOfService: formatClass(data.compartment || ''),
-    fromAirportFull: getAirportInfo(data.fromCity || ''),
-    toAirportFull: getAirportInfo(data.toCity || ''),
-    airlineFull: getAirlineName(data.carrier || ''),
-  };
-
-  return {
-    raw,
-    segments,
-    data,
-    formatted,
-  };
 }

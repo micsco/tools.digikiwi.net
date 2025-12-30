@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState, useCallback } from 'react'
 import Scanner from '../../components/Scanner'
 import BcbpViewer from '../../components/BcbpViewer'
-import { parseBcbp, ParsedBcbp } from '../../lib/bcbp'
+import { parseBCBP, ParsedBcbp } from '../../lib/bcbp'
 
 export const Route = createFileRoute('/tools/boarding-pass')({
   component: BoardingPassTool,
@@ -18,31 +18,33 @@ function BoardingPassTool() {
     if (decodedText === rawScan) return;
 
     setRawScan(decodedText);
-    const parsed = parseBcbp(decodedText);
+    const result = parseBCBP(decodedText);
 
-    if (parsed) {
-      setParsedData(parsed);
+    if (result.success && result.data) {
+      setParsedData(result.data);
       setError(null);
     } else {
-      setError("Could not read the boarding pass barcode. Please ensure the barcode is clearly visible and try scanning again.");
-      setParsedData(null);
+      // If we have partial data (data is present but success is false or just errored),
+      // the new parser might return { success: false, data: ..., error: ... }
+      // The user wants "fail soft", so if we have *any* data, we should probably show it with a warning.
+      if (result.data) {
+        setParsedData(result.data);
+        setError(`Partial decode: ${result.error || 'Unknown error'}`);
+      } else {
+        setError(result.error || "Could not decode boarding pass.");
+        setParsedData(null);
+      }
     }
   }, [rawScan]);
 
   const handleError = useCallback((errorMessage: string) => {
-    // We might not want to show every scanning error as they can be frequent (e.g. "QR code not found")
-    // But if it's a critical error or the user needs feedback, we can log it or show it.
-    // For now, let's just log to console to avoid spamming the UI,
-    // unless it's a permission error which html5-qrcode usually handles in its UI.
+    // Scanner library errors
     console.debug("Scanner error:", errorMessage);
   }, []);
 
   const loadSample = () => {
-    // Sample with full Mandatory block + Size + Conditional
-    // M1DOE/JOHN            EABCDEF LHRJFKBA 00123100Y012A000011 (58 chars)
-    // + Size (08) + XXXX1005 (8 chars)
-    // This allows verification of Date of Issue extraction (1005 -> Day 100, Year 2025)
-    const sample = 'M1DOE/JOHN            EABCDEF LHRJFKBA 00123100Y012A00001108XXXX1005';
+    // Valid Sample (60 chars) matching V7 structure
+    const sample = 'M1DOE/JOHN            E1234567LHRJFKBA 00123107Y012A00001100';
     handleScan(sample);
   };
 
@@ -92,7 +94,7 @@ function BoardingPassTool() {
         <div className="lg:col-span-2">
            {error && (
              <div className="bg-red-900/50 border border-red-500 text-red-200 p-4 rounded-xl mb-6">
-               {error}
+               <span className="font-bold">Error: </span> {error}
              </div>
            )}
 
