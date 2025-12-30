@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import BcbpViewer from './BcbpViewer';
 import { ParsedBcbp } from '../lib/bcbp';
 import React from 'react';
@@ -38,5 +38,49 @@ describe('BcbpViewer', () => {
   it('renders raw data structure', () => {
     render(<BcbpViewer parsed={mockParsedData} />);
     expect(screen.getByText('Raw Data Structure')).toBeDefined();
+  });
+
+  it('renders interactive segments accessible via keyboard', () => {
+    render(<BcbpViewer parsed={mockParsedData} />);
+
+    const segment = screen.getByText('M');
+
+    // Check accessibility attributes
+    expect(segment).toHaveAttribute('tabIndex', '0');
+    expect(segment).toHaveAttribute('role', 'button');
+    expect(segment).toHaveAttribute('aria-label', 'Format: Format Code (M)');
+
+    // Simulate focus
+    segment.focus();
+    expect(segment).toHaveFocus();
+
+    // Note: Checking for the tooltip visibility via class checks is implementation detail dependent
+    // but we can check if the tooltip text is in the document (it always is) and verify parent classes.
+    // The "group-focus:opacity-100" class ensures it shows on focus.
+  });
+
+  it('does not render detail cards for empty data', () => {
+    const emptyData: ParsedBcbp = {
+      raw: 'M...',
+      segments: [],
+      data: {
+        passengerName: '',
+        pnr: '',
+        fromCity: '',
+        toCity: '',
+        carrier: '',
+        flightNumber: '',
+        julianDate: '',
+        seat: '',
+        checkInSeq: '',
+        passengerStatus: '',
+      }
+    };
+
+    render(<BcbpViewer parsed={emptyData} />);
+
+    // Check that no detail cards are rendered
+    const detailCards = screen.queryAllByTestId('detail-card');
+    expect(detailCards.length).toBe(0);
   });
 });

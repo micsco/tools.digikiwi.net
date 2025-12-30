@@ -24,7 +24,7 @@ function BoardingPassTool() {
       setParsedData(parsed);
       setError(null);
     } else {
-      setError("Could not parse boarding pass data. Please ensure you're scanning a valid boarding pass barcode in the standard IATA BCBP format (typically encoded as PDF417 or Aztec) and that the barcode is clearly visible.");
+      setError("Could not read the boarding pass barcode. Please ensure the barcode is clearly visible and try scanning again.");
       setParsedData(null);
     }
   }, [rawScan]);

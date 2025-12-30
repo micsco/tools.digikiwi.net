@@ -9,6 +9,17 @@ interface ScannerProps {
 export default function Scanner({ onScan, onError }: ScannerProps) {
   const scannerRef = useRef<Html5QrcodeScanner | null>(null);
 
+  // Use refs to hold the latest callbacks.
+  // This allows us to call the most recent version of the callback
+  // without triggering the useEffect cleanup/re-initialization cycle.
+  const onScanRef = useRef(onScan);
+  const onErrorRef = useRef(onError);
+
+  useEffect(() => {
+    onScanRef.current = onScan;
+    onErrorRef.current = onError;
+  }, [onScan, onError]);
+
   useEffect(() => {
     // We only want to initialize this once
     if (scannerRef.current) return;
@@ -35,10 +46,14 @@ export default function Scanner({ onScan, onError }: ScannerProps) {
 
     scanner.render(
       (decodedText) => {
-        onScan(decodedText);
+        if (onScanRef.current) {
+          onScanRef.current(decodedText);
+        }
       },
       (errorMessage) => {
-        if (onError) onError(errorMessage);
+        if (onErrorRef.current) {
+          onErrorRef.current(errorMessage);
+        }
       }
     );
 
@@ -50,7 +65,7 @@ export default function Scanner({ onScan, onError }: ScannerProps) {
         scannerRef.current = null;
       }
     };
-  }, [onScan, onError]);
+  }, []); // Empty dependency array ensures initialization happens only once
 
   return (
     <div className="w-full max-w-md mx-auto bg-gray-900 p-4 rounded-xl border border-gray-700">

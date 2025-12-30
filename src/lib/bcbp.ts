@@ -17,11 +17,6 @@ export interface ParsedBcbp {
     toCity: string;
     carrier: string;
     flightNumber: string;
-    /**
-     * Julian day of year of the flight, as encoded in the BCBP (3‑digit day-of-year, e.g. "032").
-     * This is intentionally kept as the raw string from the barcode; callers should parse it
-     * to a number or convert it to a calendar date as needed.
-     */
     julianDate: string;
     seat: string;
     checkInSeq: string;
@@ -30,6 +25,67 @@ export interface ParsedBcbp {
   };
 }
 
+interface BcbpFieldDefinition {
+  id: string;
+  label: string;
+  length: number;
+  description: string;
+  validate?: (value: string) => boolean;
+}
+
+const MANDATORY_FIELDS_LENGTH = 60;
+
+const BCBP_SCHEMA: BcbpFieldDefinition[] = [
+  {
+    id: 'formatCode',
+    label: 'Format',
+    length: 1,
+    description: 'Format Code (M)',
+    // Only 'M' (Mandatory + Unique items) is currently supported.
+    // 'S' (Mandatory only) is another valid IATA format code but not implemented here.
+    validate: (v) => v === 'M'
+  },
+  { id: 'legs', label: 'Legs', length: 1, description: 'Number of Legs' },
+  { id: 'passengerName', label: 'Name', length: 20, description: 'Passenger Name' },
+  { id: 'eticket', label: 'E-Ticket', length: 1, description: 'Electronic Ticket Indicator' },
+  { id: 'pnr', label: 'PNR', length: 7, description: 'Booking Reference (PNR)' },
+  {
+    id: 'fromCity',
+    label: 'From',
+    length: 3,
+    description: 'Origin Airport',
+    validate: (v) => /^[A-Z]{3}\s*$/.test(v)
+  },
+  {
+    id: 'toCity',
+    label: 'To',
+    length: 3,
+    description: 'Destination Airport',
+    validate: (v) => /^[A-Z]{3}\s*$/.test(v)
+  },
+  {
+    id: 'carrier',
+    label: 'Carrier',
+    length: 3,
+    description: 'Operating Carrier',
+    validate: (v) => /^[A-Z0-9]{2,3}\s*$/.test(v)
+  },
+  {
+    id: 'flightNumber',
+    label: 'Flight',
+    length: 5,
+    description: 'Flight Number',
+    // IATA standard requires numeric flight numbers (1-4 digits, often 0-padded to 4 or 5 chars in BCBP).
+    // While some implementations might use alphanumerics, strict IATA compliance implies digits.
+    validate: (v) => /^\d{1,5}\s*$/.test(v)
+  },
+  { id: 'julianDate', label: 'Date', length: 3, description: 'Date of Flight (Julian)' },
+  { id: 'compartment', label: 'Class', length: 1, description: 'Compartment Code' },
+  { id: 'seat', label: 'Seat', length: 4, description: 'Seat Number' },
+  { id: 'checkInSeq', label: 'Seq', length: 5, description: 'Check-in Sequence' },
+  { id: 'passengerStatus', label: 'Status', length: 1, description: 'Passenger Status' },
+];
+
 /**
  * Parses a raw IATA Bar Coded Boarding Pass (BCBP) string into a structured representation.
  *
@@ -37,43 +93,16 @@ export interface ParsedBcbp {
  * and high-level data fields (such as passenger name, PNR, routing, carrier, and flight
  * details) from the mandatory section of the BCBP.
  *
+ * It performs basic structural/format validation of these fields (e.g., checking that
+ * airport codes are 3 letters). Callers should treat a `null` result as an invalid or
+ * unsupported BCBP string.
+ *
  * @param raw - The full BCBP string as read from a boarding pass (e.g., from a barcode).
  * @returns A {@link ParsedBcbp} object containing parsed segments and extracted data, or
  * `null` if the input fails validation or cannot be parsed.
  */
 export function parseBcbp(raw: string): ParsedBcbp | null {
-  if (!raw || raw.length < 60) return null;
-
-  // Basic BCBP structural validation based on standard field layout.
-  // 0: Format Code (1) - Must be 'M' for multiple leg (standard)
-  if (raw[0] !== 'M') {
-    return null;
-  }
-
-  // Offsets derived from the BCBP mandatory section:
-  // 30-32: From City Airport Code (3)
-  // 33-35: To City Airport Code (3)
-  // 36-38: Operating Carrier Designator (3)
-  // 39-43: Flight Number (5)
-
-  const fromCityField = raw.substring(30, 33);
-  const toCityField = raw.substring(33, 36);
-  const carrierField = raw.substring(36, 39);
-  const flightNumberField = raw.substring(39, 44);
-
-  const airportCodeRegex = /^[A-Z]{3}\s*$/; // Allow trailing spaces if any (though usually 3 chars)
-  const carrierRegex = /^[A-Z0-9]{2,3}\s*$/;
-  // Flight number can have spaces
-  const flightNumberRegex = /^[0-9A-Z ]{1,5}$/;
-
-  if (
-    !airportCodeRegex.test(fromCityField.trimEnd()) ||
-    !airportCodeRegex.test(toCityField.trimEnd()) ||
-    !carrierRegex.test(carrierField.trimEnd()) ||
-    !flightNumberRegex.test(flightNumberField)
-  ) {
-    return null;
-  }
+  if (!raw || raw.length < MANDATORY_FIELDS_LENGTH) return null;
 
   const segments: BcbpSegment[] = [];
   const data: ParsedBcbp['data'] = {
@@ -89,54 +118,52 @@ export function parseBcbp(raw: string): ParsedBcbp | null {
     passengerStatus: '',
   };
 
-  // BCBP Standard Field Lengths (Mandatory Section)
   let cursor = 0;
 
-  function addSegment(id: string, label: string, length: number, desc: string) {
-    const value = raw.substring(cursor, cursor + length);
+  // Iterate over schema to validate and parse simultaneously
+  for (const field of BCBP_SCHEMA) {
+    // Safety check: ensure we don't read past end of string (though length check above handles most)
+    if (cursor + field.length > raw.length) return null;
+
+    const value = raw.substring(cursor, cursor + field.length);
+
+    // Run validation if defined
+    if (field.validate && !field.validate(value)) {
+      return null;
+    }
+
+    // Add segment
     segments.push({
-      id,
-      label,
+      id: field.id,
+      label: field.label,
       rawValue: value,
       startIndex: cursor,
-      endIndex: cursor + length,
-      description: desc,
+      endIndex: cursor + field.length,
+      description: field.description,
     });
 
-    // Populate data object for known fields
-    if (id === 'passengerName') data.passengerName = value.trim();
-    if (id === 'pnr') data.pnr = value.trim();
-    if (id === 'fromCity') data.fromCity = value.trim();
-    if (id === 'toCity') data.toCity = value.trim();
-    if (id === 'carrier') data.carrier = value.trim();
-    if (id === 'flightNumber') data.flightNumber = value.trim();
-    if (id === 'julianDate') data.julianDate = value.trim();
-    if (id === 'seat') data.seat = value.trim();
-    if (id === 'checkInSeq') data.checkInSeq = value.trim();
-    if (id === 'passengerStatus') data.passengerStatus = value.trim();
+    // Populate data object
+    // Note: We trim values for the data object for cleaner usage
+    if (field.id in data) {
+      data[field.id] = value.trim();
+    }
 
-    cursor += length;
+    cursor += field.length;
   }
 
-  // Mandatory Items
-  addSegment('formatCode', 'Format', 1, 'Format Code (M)');
-  addSegment('legs', 'Legs', 1, 'Number of Legs');
-  addSegment('passengerName', 'Name', 20, 'Passenger Name');
-  addSegment('eticket', 'E-Ticket', 1, 'Electronic Ticket Indicator');
-  addSegment('pnr', 'PNR', 7, 'Booking Reference (PNR)');
-  addSegment('fromCity', 'From', 3, 'Origin Airport');
-  addSegment('toCity', 'To', 3, 'Destination Airport');
-  addSegment('carrier', 'Carrier', 3, 'Operating Carrier');
-  addSegment('flightNumber', 'Flight', 5, 'Flight Number');
-  addSegment('julianDate', 'Date', 3, 'Date of Flight (Julian)');
-  addSegment('compartment', 'Class', 1, 'Compartment Code');
-  addSegment('seat', 'Seat', 4, 'Seat Number');
-  addSegment('checkInSeq', 'Seq', 5, 'Check-in Sequence');
-  addSegment('passengerStatus', 'Status', 1, 'Passenger Status');
-
-  // Conditional items
+  // Conditional items (Size of variable field)
+  // This checks for the existence of the "Size of variable size field"
+  // which follows the mandatory block.
   if (cursor + 2 <= raw.length) {
-       addSegment('varSize', 'Size', 2, 'Length of conditional data');
+       const value = raw.substring(cursor, cursor + 2);
+       segments.push({
+         id: 'varSize',
+         label: 'Size',
+         rawValue: value,
+         startIndex: cursor,
+         endIndex: cursor + 2,
+         description: 'Length of conditional data',
+       });
   }
 
   return {
