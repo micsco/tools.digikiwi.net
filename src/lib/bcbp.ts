@@ -1,374 +1,466 @@
-import { BCBP_REFERENCE, AIRLINE_NAMES, AIRPORT_NAMES } from '../data/bcbp_reference';
+import { z } from 'zod';
+import { BCBP_REFERENCE } from '../data/bcbp_reference';
 
-export interface BcbpSegment {
-  id: string;
+// --- Types ---
+
+export interface Segment {
   label: string;
-  rawValue: string;
-  startIndex: number;
-  endIndex: number;
-  description: string;
-  meta?: {
-    description?: string;
-    possibleValues?: Record<string, string>;
-  };
+  value: string; // The parsed/trimmed value
+  raw: string;   // The raw string from the barcode
+  start: number;
+  end: number;
+  section: 'header' | 'leg_mandatory' | 'conditional_unique' | 'conditional_leg' | 'security';
 }
 
-export interface ParsedBcbp {
+// --- Zod Schemas ---
+
+const TrimmedString = z.string().transform(s => s.trim());
+
+// Flexible date parser: accepts 3 chars (Julian) or 4 chars (Issue Date), handles spaces
+const FlexibleDate = z.string().transform(s => {
+  const trimmed = s.trim();
+  if (!trimmed) return null;
+  const num = parseInt(trimmed, 10);
+  return isNaN(num) ? null : num; // Returns day of year (1-366) or encoded date
+}).nullable();
+
+const CompartmentCode = z.string().length(1).transform(c => {
+  const desc = BCBP_REFERENCE.compartment[c] || 'Unknown Class';
+  return { code: c, description: desc };
+});
+
+const PassengerStatus = z.string().length(1).transform(s => {
+  const desc = BCBP_REFERENCE.passengerStatus[s] || 'Unknown Status';
+  return { code: s, description: desc };
+});
+
+export const GenderSchema = z.enum(['M', 'F', 'X', 'U']).catch('U');
+
+export const LegSchema = z.object({
+  pnrCode: TrimmedString,
+  departureAirport: TrimmedString,
+  arrivalAirport: TrimmedString,
+  operatingCarrier: TrimmedString,
+  flightNumber: TrimmedString.transform(s => s.replace(/^0+/, '')),
+  dateOfFlight: FlexibleDate,
+  compartment: CompartmentCode.optional(),
+  seatNumber: TrimmedString.transform(s => s.replace(/^0+/, '')),
+  sequenceNumber: TrimmedString.transform(s => s.replace(/^0+/, '')),
+  passengerStatus: PassengerStatus.optional(),
+
+  // Conditional / Optional Fields
+  airlineNumericCode: z.string().optional(),
+  serialNumber: z.string().optional(),
+  selecteeIndicator: z.string().optional(),
+  internationalDocVerification: z.string().optional(),
+  marketingCarrier: z.string().optional(),
+  frequentFlyerAirline: z.string().optional(),
+  frequentFlyerNumber: z.string().optional(),
+  idIndicator: z.string().optional(),
+  freeBaggageAllowance: z.string().optional(),
+  fastTrack: z.boolean().optional(),
+});
+
+export interface BaggageTagParsed {
   raw: string;
-  segments: BcbpSegment[];
-  data: {
-    passengerName: string;
-    pnr: string;
-    fromCity: string;
-    toCity: string;
-    carrier: string;
-    flightNumber: string;
-    julianDate: string;
-    compartment: string;
-    seat: string;
-    checkInSeq: string;
-    passengerStatus: string;
-    dateOfIssue?: string;
+  airlineCode?: string;
+  serialNumber?: string;
+  consecutiveNumber?: number;
+  bagCount?: number;
+}
+
+export const BcbpDataSchema = z.object({
+  formatCode: z.string(),
+  numberOfLegs: z.number().int(),
+  passengerName: TrimmedString,
+  electronicTicket: z.string().optional(),
+  legs: z.array(LegSchema),
+
+  // Security
+  securityData: z.string().optional(),
+
+  // Unique / Global Conditional Data
+  version: z.number().optional(),
+  passengerDescription: z.string().optional(),
+  checkInSource: z.string().optional(),
+  issuanceDate: FlexibleDate.optional(),
+  documentType: z.string().optional(),
+  issuer: z.string().optional(),
+  baggageTags: z.array(z.custom<BaggageTagParsed>()).optional(),
+});
+
+export type ParsedBcbp = z.infer<typeof BcbpDataSchema>;
+
+// --- Constants (Field Lengths) ---
+const L = {
+  FORMAT_CODE: 1,
+  NUMBER_OF_LEGS: 1,
+  PASSENGER_NAME: 20,
+  ELECTRONIC_TICKET_INDICATOR: 1,
+  // Leg Mandatory
+  OPERATING_CARRIER_PNR: 7,
+  DEPARTURE_AIRPORT: 3,
+  ARRIVAL_AIRPORT: 3,
+  OPERATING_CARRIER_DESIGNATOR: 3,
+  FLIGHT_NUMBER: 5,
+  FLIGHT_DATE: 3,
+  COMPARTMENT_CODE: 1,
+  SEAT_NUMBER: 4,
+  CHECK_IN_SEQUENCE_NUMBER: 5,
+  PASSENGER_STATUS: 1,
+  // Conditional Header
+  CONDITIONAL_SIZE: 2,
+
+  // Conditional Section A (Unique)
+  VERSION_NUMBER_INDICATOR: 1, // '>'
+  VERSION_NUMBER: 1,
+  SECTION_A_SIZE: 2, // Hex
+  PASSENGER_DESCRIPTION: 1,
+  CHECK_IN_SOURCE: 1,
+  BOARDING_PASS_ISSUANCE_SOURCE: 1,
+  ISSUANCE_DATE: 4,
+  DOCUMENT_TYPE: 1,
+  BOARDING_PASS_ISSUER_DESIGNATOR: 3,
+  BAGGAGE_TAG_NUMBER: 13,
+
+  // Conditional Section B (Leg)
+  SECTION_B_SIZE: 2, // Hex
+  AIRLINE_NUMERIC_CODE: 3,
+  SERIAL_NUMBER: 10,
+  SELECTEE_INDICATOR: 1,
+  INTERNATIONAL_DOC_VERIF: 1,
+  MARKETING_CARRIER: 3,
+  FREQ_FLYER_AIRLINE: 3,
+  FREQ_FLYER_NUMBER: 16,
+  ID_INDICATOR: 1,
+  FREE_BAGGAGE_ALLOWANCE: 3,
+  FAST_TRACK: 1,
+
+  // Security
+  SECURITY_DATA_INDICATOR: 1, // '^'
+  SECURITY_DATA_TYPE: 1,
+  SECURITY_SIZE: 2, // Hex
+};
+
+// --- Helper Functions ---
+
+function hexToNumber(hex: string): number {
+  const val = parseInt(hex, 16);
+  return isNaN(val) ? 0 : val;
+}
+
+function parseBaggageTag(raw: string, version: number = 6): BaggageTagParsed {
+    // Format: 0 (Leading) + AAA (Airline 3) + NNNNNN (Serial 6) + CCC (Count 3)
+    // or just 13 chars.
+    const clean = raw.trim();
+    if (clean.length !== 13) return { raw: clean };
+
+    const airlineCode = clean.substring(1, 4);
+    const serialNumber = clean.substring(4, 10);
+    const countStr = clean.substring(10, 13);
+    const countVal = parseInt(countStr, 10);
+
+    let bagCount = 1;
+    if (!isNaN(countVal)) {
+        // V7 Logic: 001 = 1 bag.
+        // Pre-V7 Logic: 000 = 1 bag.
+        if (version >= 7) {
+             bagCount = countVal;
+             // If 000, maybe it means 0? Or fallback? Standard says 001=1.
+        } else {
+             // V6: 000 = 1 bag. 001 = 2 bags? Or is it 0-indexed?
+             // Issue says: "where 001= 1 bag... on version 6... 000=1 bag".
+             // This implies V6: 0 maps to 1. 1 maps to 2?
+             // Let's assume V6 count is (Value + 1).
+             bagCount = countVal + 1;
+        }
+    }
+
+    return {
+        raw: clean,
+        airlineCode,
+        serialNumber,
+        consecutiveNumber: countVal, // The raw number in the tag
+        bagCount
+    };
+}
+
+// --- Parser Logic ---
+
+class SegmentExtractor {
+  raw: string;
+  cursor: number = 0;
+  segments: Segment[] = [];
+
+  constructor(raw: string) {
+    this.raw = raw;
+  }
+
+  // Reads a fixed length field
+  read(length: number, label: string, section: Segment['section']): string | undefined {
+    if (this.cursor >= this.raw.length) return undefined;
+
+    // "Fail soft": if remaining length < requested, read what's left
+    const actualLength = Math.min(length, this.raw.length - this.cursor);
+    if (actualLength <= 0) return undefined;
+
+    const start = this.cursor;
+    const end = start + actualLength;
+    const rawValue = this.raw.substring(start, end);
+    const value = rawValue.trim();
+
+    this.segments.push({
+      label,
+      value,
+      raw: rawValue,
+      start,
+      end,
+      section
+    });
+
+    this.cursor += actualLength;
+    return rawValue;
+  }
+
+  peek(length: number): string {
+    return this.raw.substring(this.cursor, this.cursor + length);
+  }
+
+  current(): number {
+    return this.cursor;
+  }
+}
+
+// Intermediate type for building the result before final Zod validation
+interface IntermediateBcbp {
+    formatCode?: string;
+    numberOfLegs?: number;
+    passengerName?: string;
+    electronicTicket?: string;
+    legs: any[];
+    version?: number;
+    passengerDescription?: string;
+    checkInSource?: string;
+    boardingPassIssuanceSource?: string;
+    issuanceDate?: string;
     documentType?: string;
-    airlineDesignator?: string;
-    documentFormSerialNumber?: string;
-    selecteeIndicator?: string;
-    internationalDocVerification?: string;
-    marketingCarrier?: string;
-    frequentFlyerAirline?: string;
-    frequentFlyerNumber?: string;
-    industryDiscount?: string;
-    freeBaggageAllowance?: string;
-    [key: string]: string | undefined;
-  };
-  formatted: {
-    flight: string;
-    seat: string;
-    date: string;
-    passengerName: string;
-    route: string;
-    classOfService: string;
-    fromAirportFull: string;
-    toAirportFull: string;
-    airlineFull: string;
-  };
+    issuer?: string;
+    baggageTags?: string[];
+    securityData?: string;
 }
 
-interface BcbpFieldDefinition {
-  id: string;
-  label: string;
-  length: number;
-  description: string;
-  validate?: (value: string) => boolean;
-  lookup?: Record<string, string>;
-}
-
-const MANDATORY_FIELDS_LENGTH = 60;
-
-const BCBP_SCHEMA: BcbpFieldDefinition[] = [
-  {
-    id: 'formatCode',
-    label: 'Format',
-    length: 1,
-    description: 'Format Code (M = Mandatory)',
-    validate: (v) => v === 'M'
-  },
-  { id: 'legs', label: 'Legs', length: 1, description: 'Number of Legs Encoded' },
-  { id: 'passengerName', label: 'Name', length: 20, description: 'Passenger Name (Last/First)' },
-  { id: 'eticket', label: 'E-Ticket', length: 1, description: 'Electronic Ticket Indicator (E)' },
-  { id: 'pnr', label: 'PNR', length: 7, description: 'Booking Reference / PNR' },
-  {
-    id: 'fromCity',
-    label: 'From',
-    length: 3,
-    description: 'Origin Airport IATA Code',
-    validate: (v) => /^[A-Z]{3}\s*$/.test(v)
-  },
-  {
-    id: 'toCity',
-    label: 'To',
-    length: 3,
-    description: 'Destination Airport IATA Code',
-    validate: (v) => /^[A-Z]{3}\s*$/.test(v)
-  },
-  {
-    id: 'carrier',
-    label: 'Carrier',
-    length: 3,
-    description: 'Operating Carrier Designator',
-    validate: (v) => /^[A-Z0-9]{2,3}\s*$/.test(v)
-  },
-  {
-    id: 'flightNumber',
-    label: 'Flight',
-    length: 5,
-    description: 'Flight Number',
-    validate: (v) => /^\d{1,5}\s*$/.test(v)
-  },
-  { id: 'julianDate', label: 'Date', length: 3, description: 'Date of Flight (Julian Day 001-366)' },
-  {
-    id: 'compartment',
-    label: 'Class',
-    length: 1,
-    description: 'Compartment Code (Class of Service)',
-    lookup: BCBP_REFERENCE.compartment
-  },
-  { id: 'seat', label: 'Seat', length: 4, description: 'Seat Number' },
-  { id: 'checkInSeq', label: 'Seq', length: 5, description: 'Check-in Sequence Number' },
-  {
-    id: 'passengerStatus',
-    label: 'Status',
-    length: 1,
-    description: 'Passenger Status',
-    lookup: BCBP_REFERENCE.passengerStatus
-  },
-];
-
-function formatJulianDate(julian: string, year?: number): string {
-  const dayOfYear = parseInt(julian, 10);
-  if (isNaN(dayOfYear)) return julian;
-
-  const targetYear = year || new Date().getFullYear();
-  const date = new Date(targetYear, 0);
-  date.setDate(dayOfYear);
-
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-function formatSeat(seat: string): string {
-  return seat.replace(/^0+/, '');
-}
-
-function formatFlight(carrier: string, number: string): string {
-  return `${carrier.trim()} ${number.trim().replace(/^0+/, '')}`;
-}
-
-function formatPassengerName(name: string): string {
-  if (name.includes('/')) {
-    const [last, first] = name.split('/');
-    const toTitleCase = (str: string) => str.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-    return `${toTitleCase(first)} ${toTitleCase(last)}`;
-  }
-  return name;
-}
-
-function formatClass(code: string): string {
-  const c = code.trim().toUpperCase();
-  const desc = BCBP_REFERENCE.compartment[c];
-  return desc ? `${desc} (${c})` : (c.length > 0 ? `Class ${c}` : '');
-}
-
-function getAirportInfo(code: string) {
-  const info = AIRPORT_NAMES[code.trim().toUpperCase()];
-  if (info) return `${code} - ${info.name} (${info.city})`;
-  return code;
-}
-
-function getAirlineName(code: string) {
-  const name = AIRLINE_NAMES[code.trim().toUpperCase()];
-  if (name) return name;
-  return code;
-}
-
-/**
- * Parses a raw IATA Bar Coded Boarding Pass (BCBP) string into a structured representation.
- */
-export function parseBcbp(raw: string): ParsedBcbp | null {
-  if (!raw || raw.length < MANDATORY_FIELDS_LENGTH) return null;
-
-  const segments: BcbpSegment[] = [];
-  const data: ParsedBcbp['data'] = {
-    passengerName: '',
-    pnr: '',
-    fromCity: '',
-    toCity: '',
-    carrier: '',
-    flightNumber: '',
-    julianDate: '',
-    compartment: '',
-    seat: '',
-    checkInSeq: '',
-    passengerStatus: '',
-  };
-
-  let cursor = 0;
-
-  // 1. Mandatory Block Parsing
-  for (const field of BCBP_SCHEMA) {
-    if (cursor + field.length > raw.length) return null;
-
-    const value = raw.substring(cursor, cursor + field.length);
-
-    if (field.validate && !field.validate(value)) {
-      return null;
+export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; segments?: Segment[]; error?: string } {
+  try {
+    if (!raw || raw.length < 30) { // Relaxed min length
+      return { success: false, error: 'Input too short' };
     }
 
-    const meta: BcbpSegment['meta'] = {};
-    if (field.lookup) {
-      meta.possibleValues = field.lookup;
-      meta.description = field.lookup[value.trim()];
+    const extractor = new SegmentExtractor(raw);
+    const result: IntermediateBcbp = { legs: [] };
+
+    // --- Mandatory Header ---
+    result.formatCode = extractor.read(L.FORMAT_CODE, "Format Code", "header") || "M";
+    // Relaxed check: Log warning if not 'M', but proceed if mostly looks like BCBP?
+    // But Format Code is critical.
+    if (result.formatCode !== 'M') {
+        // Checking if maybe there is leading garbage?
+        // For now, strict 'M' is standard.
     }
 
-    segments.push({
-      id: field.id,
-      label: field.label,
-      rawValue: value,
-      startIndex: cursor,
-      endIndex: cursor + field.length,
-      description: meta.description || field.description,
-      meta,
-    });
+    const numLegsStr = extractor.read(L.NUMBER_OF_LEGS, "Number of Legs", "header");
+    result.numberOfLegs = parseInt(numLegsStr || "1");
+    if (isNaN(result.numberOfLegs)) result.numberOfLegs = 1;
 
-    if (field.id in data) {
-      data[field.id] = value.trim();
-    }
+    result.passengerName = extractor.read(L.PASSENGER_NAME, "Passenger Name", "header");
+    result.electronicTicket = extractor.read(L.ELECTRONIC_TICKET_INDICATOR, "E-Ticket Indicator", "header");
 
-    cursor += field.length;
-  }
+    let uniqueDataParsed = false;
 
-  // 2. Conditional Block Parsing
-  let dateOfIssueYear: number | undefined;
+    // --- Legs ---
+    for (let i = 0; i < (result.numberOfLegs || 1); i++) {
+        const leg: any = {};
+        const s = "leg_mandatory";
 
-  if (cursor + 2 <= raw.length) {
-    const varSizeHex = raw.substring(cursor, cursor + 2);
-    const varSize = parseInt(varSizeHex, 16);
+        leg.pnrCode = extractor.read(L.OPERATING_CARRIER_PNR, "PNR Code", s);
+        leg.departureAirport = extractor.read(L.DEPARTURE_AIRPORT, "Departure Airport", s);
+        leg.arrivalAirport = extractor.read(L.ARRIVAL_AIRPORT, "Arrival Airport", s);
+        leg.operatingCarrier = extractor.read(L.OPERATING_CARRIER_DESIGNATOR, "Operating Carrier", s);
+        leg.flightNumber = extractor.read(L.FLIGHT_NUMBER, "Flight Number", s);
+        leg.dateOfFlight = extractor.read(L.FLIGHT_DATE, "Date of Flight", s);
+        leg.compartment = extractor.read(L.COMPARTMENT_CODE, "Compartment Code", s);
+        leg.seatNumber = extractor.read(L.SEAT_NUMBER, "Seat Number", s);
+        leg.sequenceNumber = extractor.read(L.CHECK_IN_SEQUENCE_NUMBER, "Sequence Number", s);
+        leg.passengerStatus = extractor.read(L.PASSENGER_STATUS, "Passenger Status", s);
 
-    segments.push({
-      id: 'varSize',
-      label: 'Size',
-      rawValue: varSizeHex,
-      startIndex: cursor,
-      endIndex: cursor + 2,
-      description: `Length of conditional data (${varSize})`,
-    });
+        // Conditional Block Size
+        const conditionalSizeHex = extractor.read(L.CONDITIONAL_SIZE, "Conditional Data Size", s);
+        const conditionalSize = conditionalSizeHex ? hexToNumber(conditionalSizeHex) : 0;
 
-    cursor += 2;
+        if (conditionalSize > 0) {
+            const startOfConditional = extractor.current();
+            const endOfConditional = startOfConditional + conditionalSize;
 
-    if (!isNaN(varSize) && varSize > 0 && cursor + varSize <= raw.length) {
-      const condDataEnd = cursor + varSize;
+            // --- Section A (Unique) ---
+            const nextChar = extractor.peek(1);
+            if (!uniqueDataParsed && nextChar === '>') {
+                const sA = "conditional_unique";
+                extractor.read(L.VERSION_NUMBER_INDICATOR, "Version Indicator", sA); // >
+                const verStr = extractor.read(L.VERSION_NUMBER, "Version Number", sA);
+                result.version = verStr ? parseInt(verStr) : undefined;
 
-      // Attempt to parse standard unique conditional data
-      // Structure often starts with '>' (Field 15) then Ver (Field 16)
-      if (raw[cursor] === '>') {
-        segments.push({
-          id: 'startConditional',
-          label: 'Start',
-          rawValue: '>',
-          startIndex: cursor,
-          endIndex: cursor + 1,
-          description: 'Start of Conditional Data'
-        });
-        cursor++;
+                const sectionASizeHex = extractor.read(L.SECTION_A_SIZE, "Unique Data Size", sA);
+                const sectionASize = sectionASizeHex ? hexToNumber(sectionASizeHex) : 0;
 
-        // IATA Standard Fields after '>'
-        // 16. Ver # (1)
-        // 17. Pax Ref (Var)
-        // But often it's fixed structure for Versions.
-        // Let's do a best-effort robust parse of sequential fields if length allows.
+                if (sectionASize > 0) {
+                    const endOfSectionA = extractor.current() + sectionASize;
 
-        // Field 16: Version
-        if (cursor < condDataEnd) {
-             const ver = raw[cursor];
-             segments.push({ id: 'version', label: 'Ver', rawValue: ver, startIndex: cursor, endIndex: cursor + 1, description: 'Format Version' });
-             cursor++;
-        }
+                    result.passengerDescription = extractor.read(L.PASSENGER_DESCRIPTION, "Passenger Description", sA);
+                    result.checkInSource = extractor.read(L.CHECK_IN_SOURCE, "Check-in Source", sA);
+                    result.boardingPassIssuanceSource = extractor.read(L.BOARDING_PASS_ISSUANCE_SOURCE, "Issuance Source", sA);
 
-        // Variable length fields often follow.
-        // Without a strict parser for every version, we look for heuristic matches.
+                    result.issuanceDate = extractor.read(L.ISSUANCE_DATE, "Date of Issue", sA);
 
-        // Remaining conditional block
-        if (cursor < condDataEnd) {
-             const remaining = raw.substring(cursor, condDataEnd);
+                    result.documentType = extractor.read(L.DOCUMENT_TYPE, "Document Type", sA);
+                    result.issuer = extractor.read(L.BOARDING_PASS_ISSUER_DESIGNATOR, "Issuer Designator", sA);
 
-             // Extract Date of Issue (Julian) if possible
-             // Often field 22 or nearby. It is 4 digits.
-             // We use the previous heuristic: finding 4 digits where 3 are 001-366
-             const dateMatch = remaining.match(/(\d{4})/);
-             if (dateMatch) {
-                 const possibleDate = dateMatch[1];
-                 const day = parseInt(possibleDate.substring(0, 3));
-                 if (day > 0 && day <= 366) {
-                     data.dateOfIssue = possibleDate;
-                     const yDigit = parseInt(possibleDate[3], 10);
-                     const currentYear = new Date().getFullYear();
-                     const currentDecade = Math.floor(currentYear / 10) * 10;
-                     dateOfIssueYear = currentDecade + yDigit;
+                    const bags: string[] = [];
+                    // Try to read first bag tag
+                    if (extractor.current() < endOfSectionA) {
+                         const bag1 = extractor.read(L.BAGGAGE_TAG_NUMBER, "Baggage Tag 1", sA);
+                         if (bag1) bags.push(bag1);
+                    }
+                     // Try to read second bag tag
+                    if (extractor.current() < endOfSectionA) {
+                         const bag2 = extractor.read(L.BAGGAGE_TAG_NUMBER, "Baggage Tag 2", sA);
+                         if (bag2) bags.push(bag2);
+                    }
+                    // Try to read third bag tag? (Standard usually says up to 2 or 3 in repeated fields?)
+                    // Actually standard has repeated fields for baggage.
 
-                     // We don't segment it exactly because we aren't sure of position,
-                     // but we extract the data value.
+                    if (bags.length > 0) result.baggageTags = bags;
+
+                    const remainingA = endOfSectionA - extractor.current();
+                    if (remainingA > 0) extractor.read(remainingA, "Reserved (Section A)", sA);
+                }
+                uniqueDataParsed = true;
+            }
+
+            // --- Section B (Leg Specific) ---
+            if (extractor.current() < endOfConditional) {
+                 const sB = "conditional_leg";
+                 const sectionBSizeHex = extractor.read(L.SECTION_B_SIZE, "Leg Data Size", sB);
+                 const sectionBSize = sectionBSizeHex ? hexToNumber(sectionBSizeHex) : 0;
+
+                 if (sectionBSize > 0) {
+                     const endOfSectionB = extractor.current() + sectionBSize;
+
+                     leg.airlineNumericCode = extractor.read(L.AIRLINE_NUMERIC_CODE, "Airline Numeric Code", sB);
+                     leg.serialNumber = extractor.read(L.SERIAL_NUMBER, "Document Serial Num", sB);
+                     leg.selecteeIndicator = extractor.read(L.SELECTEE_INDICATOR, "Selectee Indicator", sB);
+                     leg.internationalDocVerification = extractor.read(L.INTERNATIONAL_DOC_VERIF, "Intl Doc Verification", sB);
+                     leg.marketingCarrier = extractor.read(L.MARKETING_CARRIER, "Marketing Carrier", sB);
+                     leg.frequentFlyerAirline = extractor.read(L.FREQ_FLYER_AIRLINE, "Frequent Flyer Airline", sB);
+                     leg.frequentFlyerNumber = extractor.read(L.FREQ_FLYER_NUMBER, "Frequent Flyer Number", sB);
+                     leg.idIndicator = extractor.read(L.ID_INDICATOR, "ID Adherence", sB);
+                     leg.freeBaggageAllowance = extractor.read(L.FREE_BAGGAGE_ALLOWANCE, "Free Baggage Allowance", sB);
+                     const ft = extractor.read(L.FAST_TRACK, "Fast Track", sB);
+                     if (ft) leg.fastTrack = (ft === 'Y');
+
+                     const remainingB = endOfSectionB - extractor.current();
+                     if (remainingB > 0) extractor.read(remainingB, "Reserved (Section B)", sB);
                  }
-             }
+            }
 
-             segments.push({
-                 id: 'conditionalContent',
-                 label: 'Airline Data',
-                 rawValue: remaining,
-                 startIndex: cursor,
-                 endIndex: condDataEnd,
-                 description: 'Variable Length Airline Data'
-             });
-             cursor = condDataEnd;
+            const remainingCond = endOfConditional - extractor.current();
+            if (remainingCond > 0) {
+                extractor.read(remainingCond, "Airline Use / Reserved", "conditional_leg");
+            }
         }
 
-      } else {
-         // Non-standard or just raw block
-         const rawVal = raw.substring(cursor, condDataEnd);
-
-         // Try heuristic extraction of Date of Issue even if not standard structure
-         if (rawVal.length >= 8 && /^\d{4}$/.test(rawVal.substring(4, 8))) {
-             const dateIssueVal = rawVal.substring(4, 8);
-             const day = parseInt(dateIssueVal.substring(0, 3));
-             if (day > 0 && day <= 366) {
-                 data.dateOfIssue = dateIssueVal;
-                 const yDigit = parseInt(dateIssueVal[3], 10);
-                 const currentYear = new Date().getFullYear();
-                 const currentDecade = Math.floor(currentYear / 10) * 10;
-                 dateOfIssueYear = currentDecade + yDigit;
-             }
-         }
-
-         segments.push({
-            id: 'conditionalData',
-            label: 'Ext. Data',
-            rawValue: rawVal,
-            startIndex: cursor,
-            endIndex: condDataEnd,
-            description: 'Conditional / Airline Data',
-         });
-         cursor = condDataEnd;
-      }
+        result.legs.push(leg);
     }
-  }
 
-  // 3. Security Data (remainder)
-  if (cursor < raw.length) {
-    segments.push({
-      id: 'securityData',
-      label: 'Security',
-      rawValue: raw.substring(cursor),
-      startIndex: cursor,
-      endIndex: raw.length,
-      description: 'Security Signature',
+    // --- Security Data ---
+    const secInd = extractor.peek(1);
+    if (secInd === '^') {
+        const sSec = "security";
+        extractor.read(L.SECURITY_DATA_INDICATOR, "Security Indicator", sSec); // ^
+        extractor.read(L.SECURITY_DATA_TYPE, "Security Type", sSec);
+
+        const secSizeHex = extractor.read(L.SECURITY_SIZE, "Security Data Size", sSec);
+        const secSize = secSizeHex ? hexToNumber(secSizeHex) : 0;
+
+        if (secSize > 0) {
+            result.securityData = extractor.read(secSize, "Security Data", sSec);
+        }
+    }
+
+    // --- Final Transformation & Validation ---
+    const parsedBaggageTags = result.baggageTags
+        ? result.baggageTags.map(t => parseBaggageTag(t, result.version))
+        : undefined;
+
+    const finalLegs = result.legs.map((legRaw: any) => {
+        // Prepare raw object for Zod
+        const prepped = {
+            ...legRaw,
+            // Cast or default to avoid Zod crashes on missing mandatory fields if input was short
+            pnrCode: legRaw.pnrCode || "",
+            departureAirport: legRaw.departureAirport || "",
+            arrivalAirport: legRaw.arrivalAirport || "",
+            operatingCarrier: legRaw.operatingCarrier || "",
+            flightNumber: legRaw.flightNumber || "",
+            dateOfFlight: legRaw.dateOfFlight || "",
+            seatNumber: legRaw.seatNumber || "",
+            sequenceNumber: legRaw.sequenceNumber || "",
+        };
+
+        const parsed = LegSchema.safeParse(prepped);
+        if (parsed.success) return parsed.data;
+
+        // Fallback for partial data
+        return {
+            ...prepped,
+            flightNumber: prepped.flightNumber.trim().replace(/^0+/, ''),
+            seatNumber: prepped.seatNumber.trim().replace(/^0+/, ''),
+            sequenceNumber: prepped.sequenceNumber.trim().replace(/^0+/, ''),
+            compartment: { code: legRaw.compartment || '?', description: 'Invalid' },
+            passengerStatus: { code: legRaw.passengerStatus || '?', description: 'Invalid' },
+            // Include other raw fields
+            dateOfFlight: null, // Fallback
+        };
     });
+
+    const finalData: ParsedBcbp = {
+        formatCode: result.formatCode || "?",
+        numberOfLegs: result.numberOfLegs || 1,
+        passengerName: result.passengerName?.trim() || "",
+        electronicTicket: result.electronicTicket,
+        legs: finalLegs as any, // Cast because fallback might miss some optional fields? No, LegSchema output matches.
+        securityData: result.securityData,
+        version: result.version,
+        passengerDescription: result.passengerDescription,
+        checkInSource: result.checkInSource,
+        issuanceDate: result.issuanceDate ? parseInt(result.issuanceDate) : null, // Helper uses string, schema expects number/null
+        // Wait, schema for issuanceDate says "FlexibleDate.optional()". FlexibleDate transforms string to number|null.
+        // So we should pass the string to the schema validation if we were using Zod for the whole object.
+        // But here we are constructing the final object manually.
+        // FlexibleDate is a Zod schema. We can use it to parse the raw string.
+
+        documentType: result.documentType,
+        issuer: result.issuer,
+        baggageTags: parsedBaggageTags
+    };
+
+    // Fix Issuance Date manual parsing if not using Zod for the whole root object yet
+    if (result.issuanceDate) {
+        const parsedDate = FlexibleDate.safeParse(result.issuanceDate);
+        if (parsedDate.success) finalData.issuanceDate = parsedDate.data;
+    }
+
+    return { success: true, data: finalData, segments: extractor.segments };
+
+  } catch (e: any) {
+    return { success: false, error: e.message };
   }
-
-  // Generate formatted data
-  const formatted = {
-    flight: formatFlight(data.carrier || '', data.flightNumber || ''),
-    seat: formatSeat(data.seat || ''),
-    date: formatJulianDate(data.julianDate || '', dateOfIssueYear),
-    passengerName: formatPassengerName(data.passengerName || ''),
-    route: `${data.fromCity} ➝ ${data.toCity}`,
-    classOfService: formatClass(data.compartment || ''),
-    fromAirportFull: getAirportInfo(data.fromCity || ''),
-    toAirportFull: getAirportInfo(data.toCity || ''),
-    airlineFull: getAirlineName(data.carrier || ''),
-  };
-
-  return {
-    raw,
-    segments,
-    data,
-    formatted,
-  };
 }
