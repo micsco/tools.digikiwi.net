@@ -41,11 +41,11 @@ export const LegSchema = z.object({
   departureAirport: TrimmedString,
   arrivalAirport: TrimmedString,
   operatingCarrier: TrimmedString,
-  flightNumber: TrimmedString.transform(s => s.replace(/^0+/, '')),
+  flightNumber: TrimmedString.transform(s => s.replace(/^0+(?!$)/, '')),
   dateOfFlight: FlexibleDate,
   compartment: CompartmentCode.optional(),
-  seatNumber: TrimmedString.transform(s => s.replace(/^0+/, '')),
-  sequenceNumber: TrimmedString.transform(s => s.replace(/^0+/, '')),
+  seatNumber: TrimmedString.transform(s => s.replace(/^0+(?!$)/, '')),
+  sequenceNumber: TrimmedString.transform(s => s.replace(/^0+(?!$)/, '')),
   passengerStatus: PassengerStatus.optional(),
 
   // Conditional / Optional Fields
@@ -165,13 +165,11 @@ function parseBaggageTag(raw: string, version: number = 6): BaggageTagParsed {
         // V7 Logic: 001 = 1 bag.
         // Pre-V7 Logic: 000 = 1 bag.
         if (version >= 7) {
+             // IATA Res 792 (V7+): "value 001 indicates 1 bag".
              bagCount = countVal;
-             // If 000, maybe it means 0? Or fallback? Standard says 001=1.
         } else {
-             // V6: 000 = 1 bag. 001 = 2 bags? Or is it 0-indexed?
-             // Issue says: "where 001= 1 bag... on version 6... 000=1 bag".
-             // This implies V6: 0 maps to 1. 1 maps to 2?
-             // Let's assume V6 count is (Value + 1).
+             // IATA Res 792 (Pre-V7): "value 000 indicates 1 bag".
+             // We assume linear mapping: 0 -> 1, 1 -> 2.
              bagCount = countVal + 1;
         }
     }
@@ -421,9 +419,9 @@ export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; s
         // Fallback for partial data
         return {
             ...prepped,
-            flightNumber: prepped.flightNumber.trim().replace(/^0+/, ''),
-            seatNumber: prepped.seatNumber.trim().replace(/^0+/, ''),
-            sequenceNumber: prepped.sequenceNumber.trim().replace(/^0+/, ''),
+            flightNumber: prepped.flightNumber.trim().replace(/^0+(?!$)/, ''),
+            seatNumber: prepped.seatNumber.trim().replace(/^0+(?!$)/, ''),
+            sequenceNumber: prepped.sequenceNumber.trim().replace(/^0+(?!$)/, ''),
             compartment: { code: legRaw.compartment || '?', description: 'Invalid' },
             passengerStatus: { code: legRaw.passengerStatus || '?', description: 'Invalid' },
             // Include other raw fields
@@ -441,22 +439,13 @@ export function parseBCBP(raw: string): { success: boolean; data?: ParsedBcbp; s
         version: result.version,
         passengerDescription: result.passengerDescription,
         checkInSource: result.checkInSource,
-        issuanceDate: result.issuanceDate ? parseInt(result.issuanceDate) : null, // Helper uses string, schema expects number/null
-        // Wait, schema for issuanceDate says "FlexibleDate.optional()". FlexibleDate transforms string to number|null.
-        // So we should pass the string to the schema validation if we were using Zod for the whole object.
-        // But here we are constructing the final object manually.
-        // FlexibleDate is a Zod schema. We can use it to parse the raw string.
-
+        issuanceDate: (result.issuanceDate && FlexibleDate.safeParse(result.issuanceDate).success)
+            ? FlexibleDate.parse(result.issuanceDate)
+            : null,
         documentType: result.documentType,
         issuer: result.issuer,
         baggageTags: parsedBaggageTags
     };
-
-    // Fix Issuance Date manual parsing if not using Zod for the whole root object yet
-    if (result.issuanceDate) {
-        const parsedDate = FlexibleDate.safeParse(result.issuanceDate);
-        if (parsedDate.success) finalData.issuanceDate = parsedDate.data;
-    }
 
     return { success: true, data: finalData, segments: extractor.segments };
 
